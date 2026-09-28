@@ -1,5 +1,8 @@
+import asyncio
+import ipaddress
 import json
 import re
+import socket
 from collections.abc import Iterator
 from typing import TypedDict
 from urllib.parse import urlparse
@@ -43,7 +46,10 @@ EXTRACT_SCHEMA = pydantic_to_tool_schema(
 
 
 FETCH_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
+DNS_TIMEOUT = 5.0
 MAX_REDIRECTS = 5
+# Web pages live on the standard ports; anything else is more likely an internal service.
+ALLOWED_PORTS = {80, 443}
 MAX_PAGE_BYTES = 3_000_000  # product pages are well under this; stops a huge download
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
@@ -58,37 +64,102 @@ class FetchError(Exception):
         self.kind, self.message, self.hint = kind, message, hint
 
 
+# ---- SSRF guard ----
+# The LLM chooses the URL, and text on a scraped page can steer the LLM, so a
+# URL can't be trusted to point at the public web. Before every request
+# (including each redirect hop) the host is resolved, every address must be
+# public, and the connection goes to the address that was checked: resolving
+# again at connect time would let DNS rebinding swap in an internal address.
+# OWASP SSRF Prevention Cheat Sheet; OWASP Top 10 for LLM Apps (LLM01, LLM06).
+
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+_USE_SEARCH_URL = "Use a public product page URL exactly as it appeared in the search results."
+
+
+def _is_public(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """True only for globally routable unicast addresses."""
+    if isinstance(address, ipaddress.IPv6Address):
+        # IPv4 carried inside IPv6 (::ffff:10.0.0.1, or 64:ff9b::a00:1 via NAT64)
+        # reaches the embedded IPv4 address, so judge that one. `is_global` alone
+        # counts NAT64 addresses as global.
+        embedded = address.ipv4_mapped
+        if embedded is None and address in _NAT64:
+            embedded = ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
+        if embedded is not None:
+            return _is_public(embedded)
+    # `is_global` counts multicast (224.0.0.0/4) as global.
+    return address.is_global and not address.is_multicast
+
+
+async def _getaddrinfo(host: str, port: int) -> list[str]:
+    """Every address `host` resolves to. Tests replace this to stay offline."""
+    infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    return [str(info[4][0]) for info in infos]
+
+
+async def _resolve_public(url: httpx.URL) -> str:
+    """The address to connect to for `url`, or FetchError if the URL may not be fetched."""
+    if url.scheme not in ("http", "https"):
+        raise FetchError("invalid_url", f"Only http(s) URLs can be fetched, not {url.scheme}:", _USE_SEARCH_URL)
+    if url.userinfo:
+        raise FetchError("invalid_url", "URLs with a username or password aren't fetched", _USE_SEARCH_URL)
+    if url.port is not None and url.port not in ALLOWED_PORTS:
+        raise FetchError("invalid_url", f"Port {url.port} isn't allowed; only 80 and 443", _USE_SEARCH_URL)
+
+    host = url.raw_host.decode("ascii")  # IDNA-encoded
+    try:
+        async with asyncio.timeout(DNS_TIMEOUT):
+            addresses = await _getaddrinfo(host, url.port or (443 if url.scheme == "https" else 80))
+    except TimeoutError as e:
+        raise FetchError("timeout", "The site's address didn't resolve in time", _USE_SNIPPET) from e
+    except OSError as e:  # socket.gaierror: unknown host
+        raise FetchError(
+            "connection_failed",
+            "Couldn't resolve the host (unknown or misspelled domain)",
+            "Check the URL came from the search results; don't invent URLs.",
+        ) from e
+
+    # Reject when *any* address isn't public, not just the first: a hostname that
+    # mixes public and internal addresses is suspicious in itself.
+    if not addresses or not all(_is_public(ipaddress.ip_address(a.split("%")[0])) for a in addresses):
+        raise FetchError(
+            "blocked_address",
+            "The URL points to a private, local or reserved network address",
+            "Only public web pages can be fetched. " + _USE_SEARCH_URL,
+        )
+    return addresses[0]
+
+
+def _pinned_request(client: httpx.AsyncClient, url: httpx.URL, address: str) -> httpx.Request:
+    """A request for `url` that connects to the already-checked `address`. The
+    Host header and TLS server name (SNI, and so certificate verification) keep
+    the real hostname."""
+    return client.build_request(
+        "GET",
+        url.copy_with(host=address),
+        headers={**HEADERS, "Host": url.netloc.decode("ascii")},
+        extensions={"sni_hostname": url.raw_host.decode("ascii")},
+    )
+
+
 async def _fetch_html(url: str) -> str:
     try:
-        async with (
-            httpx.AsyncClient(follow_redirects=True, timeout=FETCH_TIMEOUT, max_redirects=MAX_REDIRECTS) as client,
-            client.stream("GET", url, headers=HEADERS) as response,
-        ):
-            status = response.status_code
-            if status in (401, 403, 429, 503):
-                raise FetchError("blocked", f"HTTP {status}: the site refused automated access", _USE_SNIPPET)
-            if status in (404, 410):
-                raise FetchError(
-                    "not_found",
-                    f"HTTP {status}: the page doesn't exist",
-                    "The URL may be wrong or outdated; don't guess variations of it.",
-                )
-            if status >= 400:
-                raise FetchError("http_error", f"HTTP {status} fetching the page", _USE_SNIPPET)
-            content_type = response.headers.get("content-type", "")
-            if content_type and "html" not in content_type:
-                raise FetchError(
-                    "not_html",
-                    f"Not a web page (content-type {content_type.split(';')[0]})",
-                    "Use a product page URL, not an image, PDF or file.",
-                )
-
-            body = bytearray()
-            async for chunk in response.aiter_bytes():
-                body.extend(chunk)
-                if len(body) >= MAX_PAGE_BYTES:
-                    break  # product metadata sits in <head>; the first 3MB is plenty
-            return body.decode(response.encoding or "utf-8", errors="replace")
+        # trust_env=False: a proxy from HTTP(S)_PROXY would resolve the host itself,
+        # skipping the check above (and .netrc credentials must never be sent).
+        # Redirects are followed by hand so every hop is checked.
+        async with httpx.AsyncClient(follow_redirects=False, timeout=FETCH_TIMEOUT, trust_env=False) as client:
+            target = httpx.URL(url)
+            for _ in range(MAX_REDIRECTS + 1):
+                address = await _resolve_public(target)
+                response = await client.send(_pinned_request(client, target, address), stream=True)
+                try:
+                    if response.is_redirect:
+                        target = target.join(response.headers["location"])
+                        continue
+                    return await _read_page(response)
+                finally:
+                    await response.aclose()
+            raise FetchError("too_many_redirects", f"More than {MAX_REDIRECTS} redirects", _USE_SNIPPET)
     except httpx.TimeoutException as e:
         # Connect (5s) and read (10s) timeouts differ; say which one hit.
         phase = "connect" if isinstance(e, httpx.ConnectTimeout) else "respond"
@@ -96,11 +167,9 @@ async def _fetch_html(url: str) -> str:
     except httpx.ConnectError as e:
         raise FetchError(
             "connection_failed",
-            "Couldn't connect (unknown host, refused, or TLS error)",
+            "Couldn't connect (connection refused or TLS error)",
             "Check the URL came from the search results; don't invent URLs.",
         ) from e
-    except httpx.TooManyRedirects as e:
-        raise FetchError("too_many_redirects", f"More than {MAX_REDIRECTS} redirects", _USE_SNIPPET) from e
     except (httpx.InvalidURL, httpx.UnsupportedProtocol) as e:
         raise FetchError(
             "invalid_url",
@@ -109,6 +178,35 @@ async def _fetch_html(url: str) -> str:
         ) from e
     except httpx.RequestError as e:
         raise FetchError("network_error", f"Network error: {type(e).__name__}", _USE_SNIPPET) from e
+
+
+async def _read_page(response: httpx.Response) -> str:
+    """The HTML of a non-redirect response, or FetchError explaining why not."""
+    status = response.status_code
+    if status in (401, 403, 429, 503):
+        raise FetchError("blocked", f"HTTP {status}: the site refused automated access", _USE_SNIPPET)
+    if status in (404, 410):
+        raise FetchError(
+            "not_found",
+            f"HTTP {status}: the page doesn't exist",
+            "The URL may be wrong or outdated; don't guess variations of it.",
+        )
+    if status >= 400:
+        raise FetchError("http_error", f"HTTP {status} fetching the page", _USE_SNIPPET)
+    content_type = response.headers.get("content-type", "")
+    if content_type and "html" not in content_type:
+        raise FetchError(
+            "not_html",
+            f"Not a web page (content-type {content_type.split(';')[0]})",
+            "Use a product page URL, not an image, PDF or file.",
+        )
+
+    body = bytearray()
+    async for chunk in response.aiter_bytes():
+        body.extend(chunk)
+        if len(body) >= MAX_PAGE_BYTES:
+            break  # product metadata sits in <head>; the first 3MB is plenty
+    return body.decode(response.encoding or "utf-8", errors="replace")
 
 
 async def extract_product_info(url: str) -> JSONObject:

@@ -1,8 +1,12 @@
 """extract_product_info offline: pages are served by an in-process httpx
-transport, so parsing and the fetch-error mapping run without the internet.
+transport and DNS answers come from a table, so parsing, the fetch-error
+mapping and the SSRF guard run without the internet.
 (test_tools.py has the `network` tests against real pages.)"""
 
+import asyncio
+import ipaddress
 import json
+import socket
 from collections.abc import Callable
 from typing import Any
 
@@ -10,11 +14,33 @@ import httpx
 import pytest
 
 from app.llm.types import JSONObject
-from app.tools.extract import extract_product_info
+from app.tools import extract
+from app.tools.extract import MAX_REDIRECTS, extract_product_info
 
 URL = "https://www.shop.test/products/airdopes-141"
+PUBLIC_IP = "93.184.215.14"  # a real, globally routable address (TEST-NET ranges count as non-public)
 
 type Handler = Callable[[httpx.Request], httpx.Response]
+
+
+@pytest.fixture(autouse=True)
+def dns(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[str]]:
+    """Fake DNS: hostnames resolve to PUBLIC_IP unless a test sets its own
+    answer (an empty list means unknown host); IP literals resolve to
+    themselves, like getaddrinfo."""
+    answers: dict[str, list[str]] = {}
+
+    async def getaddrinfo(host: str, port: int) -> list[str]:
+        try:
+            return [str(ipaddress.ip_address(host))]
+        except ValueError:
+            pass
+        if answers.get(host) == []:
+            raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+        return answers.get(host, [PUBLIC_IP])
+
+    monkeypatch.setattr(extract, "_getaddrinfo", getaddrinfo)
+    return answers
 
 
 @pytest.fixture
@@ -145,6 +171,153 @@ async def test_fetch_errors_come_back_typed(
 
 
 async def test_too_many_redirects(serve: Callable[[Handler], None]) -> None:
-    serve(lambda request: httpx.Response(302, headers={"location": str(request.url)}))
+    serve(lambda request: httpx.Response(302, headers={"location": URL}))
     result = await extract_product_info(URL)
     assert result["error_type"] == "too_many_redirects"
+
+
+# ---- SSRF guard: only public addresses, checked on every hop ----
+
+
+def never_called(request: httpx.Request) -> httpx.Response:
+    raise AssertionError(f"request should have been blocked before connecting: {request.url}")
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "127.0.0.1",
+        "10.0.0.5",
+        "172.16.3.4",
+        "192.168.1.1",
+        "169.254.169.254",  # cloud metadata endpoint
+        "100.64.0.1",  # carrier-grade NAT
+        "0.0.0.0",  # noqa: S104 - a blocked address here, not a bind address
+        "224.0.0.1",  # multicast, which `is_global` alone lets through
+        "::1",
+        "fe80::1",
+        "fd00::1",
+        "::ffff:127.0.0.1",  # IPv4-mapped IPv6
+        "64:ff9b::a00:1",  # NAT64 of 10.0.0.1, which `is_global` alone lets through
+    ],
+)
+async def test_hosts_resolving_to_internal_addresses_are_blocked(
+    serve: Callable[[Handler], None], dns: dict[str, list[str]], address: str
+) -> None:
+    dns["www.shop.test"] = [address]
+    serve(never_called)
+    result = await extract_product_info(URL)
+    assert result["error_type"] == "blocked_address"
+    assert "public" in result["hint"] and result["available"] is False
+
+
+async def test_one_internal_address_among_public_ones_is_enough_to_block(
+    serve: Callable[[Handler], None], dns: dict[str, list[str]]
+) -> None:
+    dns["www.shop.test"] = [PUBLIC_IP, "10.0.0.5"]
+    serve(never_called)
+    assert (await extract_product_info(URL))["error_type"] == "blocked_address"
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1/admin", "http://[::1]/", "http://169.254.169.254/latest/meta-data/"])
+async def test_ip_literal_urls_are_blocked(serve: Callable[[Handler], None], url: str) -> None:
+    serve(never_called)
+    assert (await extract_product_info(url))["error_type"] == "blocked_address"
+
+
+@pytest.mark.parametrize(
+    ("url", "message_part"),
+    [
+        ("https://user:secret@www.shop.test/p", "username or password"),
+        ("https://www.shop.test:8443/p", "Port 8443"),
+        ("http://www.shop.test:6379/", "Port 6379"),  # e.g. an internal Redis
+    ],
+)
+async def test_disallowed_urls_are_refused(serve: Callable[[Handler], None], url: str, message_part: str) -> None:
+    serve(never_called)
+    result = await extract_product_info(url)
+    assert result["error_type"] == "invalid_url" and message_part in result["error"]
+
+
+async def test_redirect_to_an_internal_address_is_blocked(
+    serve: Callable[[Handler], None], dns: dict[str, list[str]]
+) -> None:
+    dns["internal.shop.test"] = ["10.0.0.5"]
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request.headers["host"])
+        return httpx.Response(302, headers={"location": "http://internal.shop.test/admin"})
+
+    serve(handler)
+    result = await extract_product_info(URL)
+    assert result["error_type"] == "blocked_address"
+    assert requested == ["www.shop.test"]  # the redirect target was never contacted
+
+
+async def test_redirect_to_a_non_http_scheme_is_refused(serve: Callable[[Handler], None]) -> None:
+    serve(lambda request: httpx.Response(302, headers={"location": "file:///etc/passwd"}))
+    assert (await extract_product_info(URL))["error_type"] == "invalid_url"
+
+
+async def test_relative_redirects_are_followed_and_rechecked(serve: Callable[[Handler], None]) -> None:
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path == "/old":
+            return httpx.Response(301, headers={"location": "/products/new"})
+        return httpx.Response(200, html="<title>New page</title>")
+
+    serve(handler)
+    result = await extract_product_info("https://www.shop.test/old")
+    assert result["name"] == "New page" and paths == ["/old", "/products/new"]
+
+
+async def test_redirect_limit(serve: Callable[[Handler], None]) -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(302, headers={"location": f"/hop{len(calls)}"})
+
+    serve(handler)
+    assert (await extract_product_info(URL))["error_type"] == "too_many_redirects"
+    assert len(calls) == MAX_REDIRECTS + 1
+
+
+async def test_connection_is_pinned_to_the_checked_address(serve: Callable[[Handler], None]) -> None:
+    """The request goes to the IP that passed the check, so DNS can't answer
+    differently at connect time (rebinding); the real hostname still goes in
+    the Host header and in TLS (SNI, and so certificate verification)."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, html="<title>ok</title>")
+
+    serve(handler)
+    await extract_product_info(URL)
+    (request,) = seen
+    assert request.url.host == PUBLIC_IP
+    assert request.headers["host"] == "www.shop.test"
+    assert request.extensions["sni_hostname"] == "www.shop.test"
+
+
+async def test_unknown_host_is_connection_failed(serve: Callable[[Handler], None], dns: dict[str, list[str]]) -> None:
+    dns["www.shop.test"] = []
+    serve(never_called)
+    result = await extract_product_info(URL)
+    assert result["error_type"] == "connection_failed" and "resolve" in result["error"]
+
+
+async def test_slow_dns_is_a_timeout(serve: Callable[[Handler], None], monkeypatch: pytest.MonkeyPatch) -> None:
+    async def hang(host: str, port: int) -> list[str]:
+        await asyncio.sleep(3600)
+        return []
+
+    monkeypatch.setattr(extract, "_getaddrinfo", hang)
+    monkeypatch.setattr(extract, "DNS_TIMEOUT", 0.01)
+    serve(never_called)
+    result = await extract_product_info(URL)
+    assert result["error_type"] == "timeout" and "resolve" in result["error"]
