@@ -23,6 +23,7 @@ from typing import Literal
 from langfuse import observe, propagate_attributes
 
 from app.agent.prompts import build_system_prompt
+from app.agent.request_check import RequestCheck, change_kind, refusal
 from app.agent.schemas import AgentResponse
 from app.agent.suggestions import generate_suggestions
 from app.config import settings
@@ -105,6 +106,11 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
     system_prompt = build_system_prompt(preferences, cart, session.budget)
     messages: list[ChatMessage] = [{"role": "system", "content": system_prompt}]
     messages.extend(_replay_history(history))
+
+    # Cart and preference changes must be asked for by the user; the check sees
+    # only this message and the previous reply, never tool results.
+    previous_reply = next((m["content"] for m in reversed(messages) if m["role"] == "assistant"), None)
+    request_check = RequestCheck(small_llm, user_message, previous_reply)
 
     # Add the new user message
     messages.append({"role": "user", "content": user_message})
@@ -189,7 +195,7 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
         messages.append(assistant_msg)
 
         # Same step number as the generation that requested them.
-        results = await _execute_tool_calls(response.tool_calls, session_id, step_count)
+        results = await _execute_tool_calls(response.tool_calls, session_id, step_count, request_check)
         for tc, result in zip(response.tool_calls, results, strict=True):
             tool_name = tc.function.name
             tools_called.append(tool_name)
@@ -327,13 +333,17 @@ CONCURRENT_TOOLS = frozenset({"search_products", "extract_product_info", "compar
 MAX_CONCURRENT_TOOLS = 4
 
 
-async def _execute_tool_calls(tool_calls: list[ToolCall], session_id: str, step: int) -> list[str]:
+async def _execute_tool_calls(
+    tool_calls: list[ToolCall], session_id: str, step: int, request_check: RequestCheck
+) -> list[str]:
     """Run one step's tool calls; results come back in the order of `tool_calls`."""
     results: dict[int, str] = {}
     limit = asyncio.Semaphore(MAX_CONCURRENT_TOOLS)
 
     async def run(index: int, call: ToolCall) -> None:
-        results[index] = await _execute_tool_traced(call.function.name, call.function.arguments, session_id, step)
+        results[index] = await _execute_tool_traced(
+            call.function.name, call.function.arguments, session_id, step, request_check
+        )
 
     async def run_concurrently(index: int, call: ToolCall) -> None:
         async with limit:
@@ -351,7 +361,9 @@ async def _execute_tool_calls(tool_calls: list[ToolCall], session_id: str, step:
     return [results[i] for i in range(len(tool_calls))]
 
 
-async def _execute_tool_traced(name: str, arguments: str, session_id: str, step: int) -> str:
+async def _execute_tool_traced(
+    name: str, arguments: str, session_id: str, step: int, request_check: RequestCheck
+) -> str:
     """Execute a tool, traced as a Langfuse tool/retriever observation.
 
     The LLM's `reasoning` argument never reaches the tool (the registry strips
@@ -370,7 +382,11 @@ async def _execute_tool_traced(name: str, arguments: str, session_id: str, step:
         input=args if args is not None else arguments,
         metadata={"reasoning": reasoning, "step": step, "requested_tool": name},
     ) as observation:
-        result = await execute_tool(name, arguments, session_id)
+        kind = change_kind(name, arguments)
+        if kind is not None and not await request_check.allows(kind):
+            result = refusal(kind)  # the user didn't ask for this change; nothing is stored
+        else:
+            result = await execute_tool(name, arguments, session_id)
         try:
             output = json.loads(result)
         except json.JSONDecodeError:
