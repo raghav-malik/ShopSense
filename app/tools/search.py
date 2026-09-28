@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from app.config import settings
 from app.llm.types import JSONObject
 from app.tools.base import pydantic_to_tool_schema
+from app.tools.untrusted import WEB_CONTENT_NOTICE, clean_text
 
 # ShopSense prices in INR, so bias results toward Indian stores (ddgs defaults to us-en).
 SEARCH_REGION = "in-en"
@@ -19,6 +20,8 @@ SEARCH_REGION = "in-en"
 # a few 1-2.5K-char snippets were most of the bulk.
 MAX_RESULTS = 5
 SNIPPET_MAX_CHARS = 400
+# ddgs joins titles when several engines return the same page (SR-70).
+TITLE_MAX_CHARS = 200
 
 
 class SearchProductsInput(BaseModel):
@@ -72,14 +75,15 @@ async def search_products(query: str, max_results: int = settings.max_search_res
             url = r.get("href", "")
             formatted.append(
                 {
-                    "title": r.get("title", ""),
+                    "title": clean_text(r.get("title", ""), TITLE_MAX_CHARS),
                     "url": url,
-                    "snippet": _truncate(r.get("body", ""), SNIPPET_MAX_CHARS),
+                    "snippet": clean_text(r.get("body", ""), SNIPPET_MAX_CHARS),
                     "source": urlparse(url).netloc.removeprefix("www.") if url else "",
                 }
             )
 
         return {
+            "web_content_notice": WEB_CONTENT_NOTICE,
             "results": formatted,
             "result_count": len(formatted),
             "query_used": query,
@@ -116,13 +120,6 @@ async def search_products(query: str, max_results: int = settings.max_search_res
             "results": [],
             "hint": "Retry once with a different query.",
         }
-
-
-def _truncate(text: str, limit: int) -> str:
-    """Cut at a word boundary so a trailing price like '₹2,79' isn't left half-written."""
-    if len(text) <= limit:
-        return text
-    return text[:limit].rsplit(" ", 1)[0] + " …"
 
 
 def _ddgs_text(query: str, max_results: int) -> list[JSONObject]:

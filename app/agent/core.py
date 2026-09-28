@@ -17,11 +17,13 @@ Observation names are referenced by Langfuse evaluators and dashboards; keep the
 import asyncio
 import contextlib
 import json
+import re
 from typing import Literal
 
 from langfuse import observe, propagate_attributes
 
 from app.agent.prompts import build_system_prompt
+from app.agent.request_check import RequestCheck, change_kind, refusal
 from app.agent.schemas import AgentResponse
 from app.agent.suggestions import generate_suggestions
 from app.config import settings
@@ -105,6 +107,11 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
     messages: list[ChatMessage] = [{"role": "system", "content": system_prompt}]
     messages.extend(_replay_history(history))
 
+    # Cart and preference changes must be asked for by the user; the check sees
+    # only this message and the previous reply, never tool results.
+    previous_reply = next((m["content"] for m in reversed(messages) if m["role"] == "assistant"), None)
+    request_check = RequestCheck(small_llm, user_message, previous_reply)
+
     # Add the new user message
     messages.append({"role": "user", "content": user_message})
 
@@ -138,7 +145,7 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
 
         # Check if the LLM wants to respond (no tool calls)
         if response.finish_reason == "stop" or not response.tool_calls:
-            final_text = response.content or "I couldn't find a good answer. Could you rephrase?"
+            final_text = _without_images(response.content or "I couldn't find a good answer. Could you rephrase?")
 
             # Save assistant response
             await queries.save_message(
@@ -188,7 +195,7 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
         messages.append(assistant_msg)
 
         # Same step number as the generation that requested them.
-        results = await _execute_tool_calls(response.tool_calls, session_id, step_count)
+        results = await _execute_tool_calls(response.tool_calls, session_id, step_count, request_check)
         for tc, result in zip(response.tool_calls, results, strict=True):
             tool_name = tc.function.name
             tools_called.append(tool_name)
@@ -224,6 +231,7 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
         level="WARNING", status_message=f"max_agent_steps ({settings.max_agent_steps}) reached"
     )
     final_text, final_tokens = await _answer_from_research(llm, messages, tools_schema, products_found)
+    final_text = _without_images(final_text)
     total_tokens += final_tokens
     await queries.save_message(
         Message(
@@ -242,6 +250,18 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
         step_count=step_count,
         total_tokens=total_tokens,
     )
+
+
+# ![alt](url): the UI renders markdown, and the browser loads an image's URL by
+# itself, so a web page that talks the model into "including a badge" could
+# leak whatever the model puts in that URL (OWASP LLM01/LLM02). Answers never
+# need images, so they're removed in code, whatever the model does.
+_MARKDOWN_IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
+
+
+def _without_images(text: str) -> str:
+    """`text` with markdown images replaced by their alt text."""
+    return _MARKDOWN_IMAGE.sub(r"\1", text)
 
 
 STEP_LIMIT_NOTE = (
@@ -313,13 +333,17 @@ CONCURRENT_TOOLS = frozenset({"search_products", "extract_product_info", "compar
 MAX_CONCURRENT_TOOLS = 4
 
 
-async def _execute_tool_calls(tool_calls: list[ToolCall], session_id: str, step: int) -> list[str]:
+async def _execute_tool_calls(
+    tool_calls: list[ToolCall], session_id: str, step: int, request_check: RequestCheck
+) -> list[str]:
     """Run one step's tool calls; results come back in the order of `tool_calls`."""
     results: dict[int, str] = {}
     limit = asyncio.Semaphore(MAX_CONCURRENT_TOOLS)
 
     async def run(index: int, call: ToolCall) -> None:
-        results[index] = await _execute_tool_traced(call.function.name, call.function.arguments, session_id, step)
+        results[index] = await _execute_tool_traced(
+            call.function.name, call.function.arguments, session_id, step, request_check
+        )
 
     async def run_concurrently(index: int, call: ToolCall) -> None:
         async with limit:
@@ -337,7 +361,9 @@ async def _execute_tool_calls(tool_calls: list[ToolCall], session_id: str, step:
     return [results[i] for i in range(len(tool_calls))]
 
 
-async def _execute_tool_traced(name: str, arguments: str, session_id: str, step: int) -> str:
+async def _execute_tool_traced(
+    name: str, arguments: str, session_id: str, step: int, request_check: RequestCheck
+) -> str:
     """Execute a tool, traced as a Langfuse tool/retriever observation.
 
     The LLM's `reasoning` argument never reaches the tool (the registry strips
@@ -356,7 +382,11 @@ async def _execute_tool_traced(name: str, arguments: str, session_id: str, step:
         input=args if args is not None else arguments,
         metadata={"reasoning": reasoning, "step": step, "requested_tool": name},
     ) as observation:
-        result = await execute_tool(name, arguments, session_id)
+        kind = change_kind(name, arguments)
+        if kind is not None and not await request_check.allows(kind):
+            result = refusal(kind)  # the user didn't ask for this change; nothing is stored
+        else:
+            result = await execute_tool(name, arguments, session_id)
         try:
             output = json.loads(result)
         except json.JSONDecodeError:

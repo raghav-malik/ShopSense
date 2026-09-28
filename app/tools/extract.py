@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.llm.types import JSONObject
 from app.tools.base import pydantic_to_tool_schema
+from app.tools.untrusted import WEB_CONTENT_NOTICE, clean_text
 
 CURRENCY_SYMBOLS = {"INR": "₹", "USD": "$", "EUR": "€", "GBP": "£"}
 
@@ -50,6 +51,9 @@ DNS_TIMEOUT = 5.0
 MAX_REDIRECTS = 5
 # Web pages live on the standard ports; anything else is more likely an internal service.
 ALLOWED_PORTS = {80, 443}
+# Page text that reaches the LLM: product names and features are short;
+# anything longer is more likely boilerplate or injected text.
+FIELD_MAX_CHARS = 200
 MAX_PAGE_BYTES = 3_000_000  # product pages are well under this; stops a huge download
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
@@ -236,19 +240,21 @@ async def extract_product_info(url: str) -> JSONObject:
         meta_data = _extract_meta(soup)
 
         # Merge: JSON-LD > OG > Meta
-        name = product_data.get("name") or og_data.get("name") or meta_data.get("name") or "Unknown Product"
+        name = product_data.get("name") or og_data.get("name") or meta_data.get("name")
         price = product_data.get("price") or og_data.get("price") or meta_data.get("price")
         rating = product_data.get("rating")
         features = product_data.get("features", [])
         image = og_data.get("image") or product_data.get("image")
 
+        # Every field below except buy_link and source comes from the page.
         return {
-            "name": name,
-            "price": price,
-            "rating": rating,
-            "features": features[:5],  # cap at 5
+            "web_content_notice": WEB_CONTENT_NOTICE,
+            "name": clean_text(name, FIELD_MAX_CHARS) if name else "Unknown Product",
+            "price": clean_text(price, 60) if price else None,
+            "rating": clean_text(rating, 60) if rating else None,
+            "features": [clean_text(f, FIELD_MAX_CHARS) for f in features[:5]],  # cap at 5
             "buy_link": url,
-            "image": image,
+            "image": clean_text(image, 500) if image else None,
             # True/False only when the page states stock; None means unknown.
             "available": product_data.get("available"),
             "source": _get_domain(url),

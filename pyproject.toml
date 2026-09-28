@@ -72,6 +72,8 @@ ignore = [
 "app/agent/core.py" = ["T201"]
 "app/db/queries.py" = ["T201"]
 "app/tools/search.py" = ["T201"]
+# Evals are run by hand and report by printing.
+"evals/**" = ["T201"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["app"]
@@ -81,7 +83,7 @@ known-first-party = ["app"]
 
 [tool.mypy]
 python_version = "3.12"
-files = ["app", "frontend", "tests"]
+files = ["app", "frontend", "tests", "evals"]
 # frontend/app.py would otherwise clash with the `app` package; name modules by path.
 explicit_package_bases = true
 strict = true
