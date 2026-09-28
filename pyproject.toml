@@ -121,6 +121,8 @@ branch = true
 source = ["app"]
 
 [tool.coverage.report]
+# Offline suite (`pytest -m "not network" --cov`) is at 90%; this floor stops silent drops.
+fail_under = 85
 show_missing = true
 skip_covered = true
 # `if __name__ == "__main__"` smoke tests are for manual runs.
