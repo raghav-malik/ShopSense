@@ -31,6 +31,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         langfuse_ok = False
         logger.warning("Langfuse auth check failed (%s): %s", settings.langfuse_base_url, e)
+    app.state.langfuse_project_url = await _langfuse_project_url() if langfuse_ok else None
     logger.info(
         "ShopSense started. Database initialized. LLM: %s/%s. Langfuse: %s",
         settings.llm_provider, settings.llm_model, "connected" if langfuse_ok else "NOT connected (traces will be lost)",
@@ -58,6 +59,22 @@ app.include_router(sessions.router)
 app.include_router(chat.router)
 
 
+async def _langfuse_project_url() -> str | None:
+    """Deep link to this project's Langfuse dashboard (right region, right project)."""
+    try:
+        projects = await asyncio.to_thread(get_langfuse().api.projects.get)
+        return f"{settings.langfuse_base_url}/project/{projects.data[0].id}"
+    except Exception:
+        return None
+
+
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "shopsense"}
+    # The frontend reads the model and dashboard link from here rather than
+    # hardcoding them (the spec's UI said "Llama 3.3 70B" and linked the EU region).
+    return {
+        "status": "ok",
+        "service": "shopsense",
+        "llm": f"{settings.llm_provider}/{settings.llm_model}",
+        "langfuse_url": getattr(app.state, "langfuse_project_url", None) or settings.langfuse_base_url,
+    }
