@@ -25,7 +25,6 @@ from langfuse import observe, propagate_attributes
 from app.agent.prompts import build_system_prompt
 from app.agent.request_check import RequestCheck, change_kind, refusal
 from app.agent.schemas import AgentResponse
-from app.agent.suggestions import generate_suggestions
 from app.config import settings
 from app.db import queries
 from app.db.models import Message, MessageRow
@@ -64,9 +63,11 @@ async def run_agent(
     3. Loop: LLM call → tool dispatch → observe → repeat until done
     4. Return final response with metadata
 
-    `llm` (the agent's model, LLM_MODEL) and `small_llm` (side jobs such as
-    suggestions, LLM_SMALL_MODEL) default to the configured provider; tests pass
-    fakes. These arguments are the agent's only dependency on a model.
+    `llm` (the agent's model, LLM_MODEL) and `small_llm` (side jobs such as the
+    request check, LLM_SMALL_MODEL) default to the configured provider; tests
+    pass fakes. These arguments are the agent's only dependency on a model.
+    Follow-up suggestions aren't made here: the reply returns without waiting
+    for them, and the UI asks for them next (app.agent.suggestions).
     `langfuse_trace_id` is consumed by @observe (it sets this run's trace id, so
     a caller can link to the trace even if the run fails); it never reaches the body.
     """
@@ -85,7 +86,6 @@ async def run_agent(
             "step_count": result.step_count,
             "tool_calls_made": result.tool_calls_made,
             "total_tokens": result.total_tokens,
-            "suggestions": result.suggestions,
         },
     )
     return result
@@ -157,18 +157,10 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
                 )
             )
 
-            # The reply goes into the context the suggestions are generated from;
-            # otherwise they'd follow up on the turn *before* this answer.
-            messages.append({"role": "assistant", "content": final_text})
-
-            # Generate follow-on suggestions (best-effort, from Airtap pattern)
-            suggestions = await generate_suggestions(messages, small_llm)
-
             return AgentResponse(
                 response=final_text,
                 tool_calls_made=tools_called,
                 products_found=products_found,
-                suggestions=suggestions,
                 trace_url=await _current_trace_url(),
                 step_count=step_count,
                 total_tokens=total_tokens,
@@ -240,12 +232,10 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
             content=final_text,
         )
     )
-    messages.append({"role": "assistant", "content": final_text})
     return AgentResponse(
         response=final_text,
         tool_calls_made=tools_called,
         products_found=products_found,
-        suggestions=await generate_suggestions(messages, small_llm),
         trace_url=await _current_trace_url(),
         step_count=step_count,
         total_tokens=total_tokens,

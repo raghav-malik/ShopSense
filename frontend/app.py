@@ -69,6 +69,15 @@ def get_cart(session_id: str) -> JSONObject:
     return _call("GET", f"/sessions/{session_id}/cart")
 
 
+def get_suggestions(session_id: str) -> list[str]:
+    """Follow-up suggestions for the latest answer; best-effort."""
+    try:
+        suggestions: list[str] = _call("POST", f"/sessions/{session_id}/suggestions")["suggestions"]
+    except ApiError:
+        return []
+    return suggestions
+
+
 def get_history(session_id: str) -> JSONObject:
     return _call("GET", f"/sessions/{session_id}/history")
 
@@ -240,6 +249,12 @@ if "pending_message" in st.session_state:
 for i, message in enumerate(st.session_state.messages):
     render_message(message, i)
 
+# Suggestions are fetched after the answer is on screen, so the answer never
+# waits for them (the rerun after an answer sets fetch_suggestions).
+if st.session_state.pop("fetch_suggestions", False) and not prompt:
+    with st.spinner("Thinking of follow-ups..."):
+        st.session_state.suggestions = get_suggestions(session_id)
+
 # Follow-on suggestion chips (Airtap pattern): clicking one sends it as the next message.
 if st.session_state.suggestions and not prompt:
     columns = st.columns(len(st.session_state.suggestions))
@@ -276,8 +291,8 @@ if prompt:
                 "meta": {k: result.get(k) for k in ("trace_url", "step_count", "total_tokens", "tool_calls_made")},
             }
         )
-        st.session_state.suggestions = result.get("suggestions", [])
+        st.session_state.fetch_suggestions = True
 
-    # Re-run so the sidebar cart (which the agent may have just changed), the
-    # new messages, and the suggestion chips all render from fresh state.
+    # Re-run so the sidebar cart (which the agent may have just changed) and the
+    # new messages render from fresh state; suggestions are fetched on that run.
     st.rerun()

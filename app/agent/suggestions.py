@@ -1,7 +1,11 @@
 import re
 
-from app.llm.adapter import LLMAdapter
+from langfuse import propagate_attributes
+
+from app.db.models import MessageRow
+from app.llm.adapter import LLMAdapter, get_small_llm_adapter
 from app.llm.types import ChatMessage
+from app.tracing.langfuse_setup import get_langfuse
 
 SUGGESTIONS_SYSTEM_PROMPT = """You are a follow-up suggestion generator for a shopping assistant.
 Given the conversation so far, generate 2-3 concise follow-up suggestions the user is likely to send next.
@@ -19,6 +23,24 @@ Bad examples: "Would you like to see more?", "How can I help?", "Let me know if 
 
 # "- ", "* ", "• ", "1. ", "2) " at the start of a line
 _LIST_MARKER = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s*")
+
+
+async def suggest_follow_ups(session_id: str, history: list[MessageRow], llm: LLMAdapter | None = None) -> list[str]:
+    """Suggestions for the conversation so far, asked for by the UI after it
+    shows the agent's answer (as Airtap makes them when a task completes), so
+    the answer never waits for them. Traced as its own trace in the session."""
+    messages: list[ChatMessage] = [
+        {"role": m["role"], "content": m["content"]} for m in history if m["role"] in ("user", "assistant")
+    ]
+    langfuse = get_langfuse()
+    with (
+        propagate_attributes(session_id=session_id, trace_name="suggest-follow-ups"),
+        langfuse.start_as_current_observation(as_type="span", name="suggest-follow-ups") as span,
+    ):
+        span.update(input=messages[-1]["content"] if messages else None)
+        suggestions = await generate_suggestions(messages, llm or get_small_llm_adapter())
+        span.update(output=suggestions)
+    return suggestions
 
 
 async def generate_suggestions(conversation_messages: list[ChatMessage], llm: LLMAdapter) -> list[str]:

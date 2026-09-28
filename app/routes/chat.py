@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from app.agent.core import run_agent
 from app.agent.schemas import AgentResponse
+from app.agent.suggestions import suggest_follow_ups
 from app.db import queries
 from app.db.models import MessageRow, Session
 from app.llm.errors import LLMError, LLMRateLimitError, LLMTimeoutError, LLMUnavailableError
@@ -87,6 +88,20 @@ async def _trace_url(trace_id: str) -> str | None:
         return await asyncio.to_thread(get_langfuse().get_trace_url, trace_id=trace_id)
     except Exception:  # noqa: BLE001 - the debug link is optional; never mask the real error
         return None
+
+
+class SuggestionsResponse(BaseModel):
+    suggestions: list[str]
+
+
+@router.post("/suggestions")
+async def suggestions(session_id: str) -> SuggestionsResponse:
+    """2-3 follow-up messages the user might send next. Best-effort: an empty
+    list if they can't be made. The UI calls this after showing an answer, so
+    the answer itself never waits for suggestions."""
+    await _require_session(session_id)
+    history = await queries.get_messages(session_id, limit=12)
+    return SuggestionsResponse(suggestions=await suggest_follow_ups(session_id, history))
 
 
 class CartItemOut(BaseModel):
