@@ -1,0 +1,62 @@
+[project]
+name = "shopsense"
+version = "0.1.0"
+description = "Personal shopping concierge agent: FastAPI + a ReAct LLM agent + Streamlit, traced with Langfuse"
+readme = "README.md"
+requires-python = ">=3.12"
+# Compatible ranges here; the exact, hashed versions live in uv.lock.
+dependencies = [
+    "aiosqlite>=0.22.1,<0.23",
+    "beautifulsoup4>=4.15,<5",
+    "ddgs>=9.16,<10",
+    "fastapi>=0.141.1,<0.142",
+    "httpx>=0.28.1,<0.29",
+    "langfuse>=4.15.6,<5",
+    "openai>=3.19.2,<4",
+    "pydantic>=2.13.5,<3",
+    "pydantic-settings>=2.15,<3",
+    "streamlit>=1.64,<2",
+    "uvicorn[standard]>=0.54,<0.55",
+]
+
+[dependency-groups]
+# PEP 735: never shipped with the app. `uv sync` installs `dev` by default.
+dev = [{ include-group = "lint" }, { include-group = "test" }, "pre-commit==4.6.2"]
+lint = ["ruff==0.16.9", "mypy==2.3.1", "pip-audit==2.10.1"]
+test = ["pytest==9.1.1", "pytest-asyncio==1.4.0", "pytest-cov==7.1.0"]
+
+[tool.uv]
+# An application, not a library: no build system, flat layout (app/, frontend/, tests/).
+package = false
+
+
+# ---- pytest ----
+
+[tool.pytest]
+testpaths = ["tests"]
+# `app` is importable from the project root; importlib mode avoids sys.path hacks.
+pythonpath = ["."]
+addopts = ["--import-mode=importlib", "-ra"]
+# strict = strict_config + strict_markers + strict_parametrization_ids + strict_xfail
+strict = true
+# pytest-asyncio 1.x runs `async def` tests and fixtures directly; the spec's
+# custom event_loop fixture was deprecated in 0.23 and removed in 1.0.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+asyncio_default_test_loop_scope = "function"
+markers = [
+    "network: needs the internet (DuckDuckGo search, real product pages). Skip with: pytest -m \"not network\"",
+]
+
+
+# ---- coverage ----
+
+[tool.coverage.run]
+branch = true
+source = ["app"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+# `if __name__ == "__main__"` smoke tests are for manual runs.
+exclude_also = ['if __name__ == "__main__":']

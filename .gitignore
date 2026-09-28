@@ -10,3 +10,11 @@ shopsense.db
 
 # Local spec review notes (not for the repo)
 SPEC_REVIEW.md
+
+# Tooling caches and uv's default environment
+.venv/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
