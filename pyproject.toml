@@ -1,6 +1,6 @@
 [project]
 name = "shopsense"
-version = "0.1.0"
+version = "0.3.0"
 description = "Personal shopping concierge agent: FastAPI + a ReAct LLM agent + Streamlit, traced with Langfuse"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -22,7 +22,7 @@ dependencies = [
 [dependency-groups]
 # PEP 735: never shipped with the app. `uv sync` installs `dev` by default.
 dev = [{ include-group = "lint" }, { include-group = "test" }, "pre-commit==4.6.2"]
-lint = ["ruff==0.16.9", "mypy==2.3.1", "pip-audit==2.10.1"]
+lint = ["ruff==0.16.9", "mypy==2.3.1", "pip-audit==2.10.1", "import-linter==2.15"]
 test = ["pytest==9.1.1", "pytest-asyncio==1.4.0", "pytest-cov==7.1.0"]
 
 [tool.uv]
@@ -93,6 +93,34 @@ plugins = ["pydantic.mypy"]
 init_forbid_extra = true
 init_typed = true
 warn_required_dynamic_aliases = true
+
+
+# ---- import-linter: module layering (see AGENTS.md) ----
+
+[tool.importlinter]
+root_packages = ["app"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Layers: each package imports only from packages below it"
+type = "layers"
+layers = [
+    "app.main",
+    "app.routes",
+    "app.agent",
+    "app.tools",
+    "app.llm",
+    "app.db | app.tracing | app.request_context",
+    "app.config",
+]
+
+[[tool.importlinter.contracts]]
+name = "Only the LLM adapters use a provider SDK"
+type = "forbidden"
+source_modules = ["app.main", "app.routes", "app.agent", "app.tools", "app.db"]
+forbidden_modules = ["openai"]
+# Going through app.llm is the point; only importing the SDK directly is forbidden.
+allow_indirect_imports = true
 
 
 # ---- pytest ----

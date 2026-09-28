@@ -43,6 +43,9 @@ jobs:
       - name: Types
         run: uv run --frozen mypy
 
+      - name: Module layering
+        run: uv run --frozen lint-imports
+
       # Hermetic: dummy keys, tracing off, temp databases (tests/conftest.py).
       # Network tests hit DuckDuckGo and real shops, too flaky for a gate.
       - name: Tests
