@@ -8,15 +8,19 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # pytest all find it no matter where they're launched from.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-LLMProvider = Literal["groq", "openai"]
+LLMProvider = Literal["groq", "openai", "gemini"]
 LLMApi = Literal["chat_completions", "responses"]
 
 # Per-provider defaults: (base_url, model, reasoning_effort).
 # OpenAI's GPT-6 models reject function tools in Chat Completions unless
 # reasoning_effort is "none", and the agent always sends tools.
+# Gemini: Google's OpenAI-compatible endpoint; gemini-3.8-flash is the current
+# stable Flash model (2.0 is shut down, 2.5 closed to new projects). Thinking
+# can't be turned off on Gemini 3, so the model's own default level applies.
 PROVIDER_DEFAULTS: dict[str, tuple[str, str, str | None]] = {
     "groq": ("https://api.groq.com/openai/v1", "openai/gpt-oss-120b", None),
     "openai": ("https://api.openai.com/v1", "gpt-6-luna", "none"),
+    "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai/", "gemini-3.8-flash", None),
 }
 # The Responses API allows tools *with* reasoning. "medium" is OpenAI's default
 # and, in testing on gpt-6-luna, the lowest level that reliably produced
@@ -27,15 +31,20 @@ RESPONSES_DEFAULT_REASONING_EFFORT = "medium"
 class Settings(BaseSettings):
     """Application configuration loaded from environment variables."""
 
-    # LLM — both providers speak the OpenAI Chat Completions API; OpenAI also the Responses API
-    llm_provider: LLMProvider = Field(default="openai", description="Which LLM provider to call: 'openai' (default) or 'groq'")
+    # LLM — every provider speaks the OpenAI Chat Completions API; OpenAI also the Responses API
+    llm_provider: LLMProvider = Field(default="openai", description="Which LLM provider to call: 'openai' (default), 'groq' or 'gemini'")
     llm_api: LLMApi = Field(
         default="chat_completions",
         description="'chat_completions' (default) or 'responses' (OpenAI only: reasoning together with tools)",
     )
     groq_api_key: str | None = Field(default=None, description="Groq API key from console.groq.com (required when LLM_PROVIDER=groq)")
     openai_api_key: str | None = Field(default=None, description="OpenAI API key from platform.openai.com (required when LLM_PROVIDER=openai)")
-    llm_model: str | None = Field(default=None, description="Model ID; defaults per provider (gpt-oss-120b on Groq, gpt-6-luna on OpenAI)")
+    gemini_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+        description="Gemini API key from aistudio.google.com (required when LLM_PROVIDER=gemini)",
+    )
+    llm_model: str | None = Field(default=None, description="Model ID; defaults per provider (gpt-6-luna on OpenAI, gpt-oss-120b on Groq, gemini-3.8-flash on Gemini)")
     llm_base_url: str | None = Field(default=None, description="OpenAI-compatible base URL; defaults per provider")
     llm_reasoning_effort: str | None = Field(default=None, description="reasoning effort sent to the model; defaults per provider and API")
     llm_max_tokens: int = Field(default=4096, description="Max tokens per LLM response (max_completion_tokens / max_output_tokens)")
@@ -102,7 +111,11 @@ class Settings(BaseSettings):
 
     @property
     def llm_api_key(self) -> str | None:
-        return self.openai_api_key if self.llm_provider == "openai" else self.groq_api_key
+        return {
+            "openai": self.openai_api_key,
+            "groq": self.groq_api_key,
+            "gemini": self.gemini_api_key,
+        }[self.llm_provider]
 
 
 # Singleton — import this everywhere

@@ -20,6 +20,7 @@ _REDACTIONS = [
     (re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"), "[EMAIL]"),
     (re.compile(r"\b(?:sk|pk)-lf-[\w-]{8,}\b"), "[LANGFUSE_KEY]"),
     (re.compile(r"\bgsk_[A-Za-z0-9]{20,}\b"), "[GROQ_KEY]"),
+    (re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"), "[GOOGLE_KEY]"),
     (re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"), "[API_KEY]"),
     (re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{16,}"), "Bearer [TOKEN]"),
 ]

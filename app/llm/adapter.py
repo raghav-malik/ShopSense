@@ -245,6 +245,52 @@ class ChatCompletionsAdapter(_OpenAISDKAdapter):
         )
 
 
+class GeminiAdapter(ChatCompletionsAdapter):
+    """Google Gemini through its OpenAI-compatible endpoint (LLM_PROVIDER=gemini).
+
+    Same request/response shape as Chat Completions, with two Gemini 3 rules:
+    - temperature is left at the model default: Google "strongly recommends"
+      1.0 for all Gemini 3 models; lower values can cause looping.
+    - thought signatures: Gemini 3 attaches opaque extra data to each tool call
+      (its encrypted reasoning) that must come back unchanged on the next
+      request. The raw tool calls travel on the assistant message under
+      PROVIDER_ITEMS_KEY (as with the Responses API) and are replayed verbatim.
+    Airtap's native-SDK omniGemini.ts preserves `thoughtSignature` the same way.
+    """
+
+    def _build_request(self, messages, tools, tool_choice):
+        replayed = [
+            {**m, "tool_calls": m[PROVIDER_ITEMS_KEY]}
+            if m.get("role") == "assistant" and m.get(PROVIDER_ITEMS_KEY) else m
+            for m in messages
+        ]
+        kwargs = super()._build_request(replayed, tools, tool_choice)
+        kwargs.pop("temperature", None)
+        return kwargs
+
+    def _to_llm_response(self, response):
+        result = super()._to_llm_response(response)
+        tool_calls = response.choices[0].message.tool_calls
+        if tool_calls:
+            # Full tool calls including any provider extras (the thought signature).
+            result.provider_items = [tc.model_dump(exclude_none=True) for tc in tool_calls]
+        return result
+
+    def _success_update(self, kwargs, response):
+        """Gemini's OpenAI endpoint leaves thinking tokens out of completion_tokens
+        (and completion_tokens_details is null); they only show up in total_tokens.
+        Measured: 18 prompt + 11 completion but total 227. Google bills thinking
+        as output, so put the difference in the reasoning bucket or Langfuse would
+        under-report cost."""
+        update = super()._success_update(kwargs, response)
+        usage = response.usage
+        hidden_thinking = usage.total_tokens - usage.prompt_tokens - usage.completion_tokens if usage else 0
+        if hidden_thinking > 0 and update.get("usage_details"):
+            buckets = update["usage_details"]
+            buckets["output_reasoning_tokens"] = buckets.get("output_reasoning_tokens", 0) + hidden_thinking
+        return update
+
+
 class ResponsesAdapter(_OpenAISDKAdapter):
     """OpenAI Responses API (LLM_API=responses): reasoning *and* function tools
     together, which Chat Completions doesn't allow on GPT-6, with reasoning
@@ -471,20 +517,25 @@ def _retry_after_seconds(error: RateLimitError) -> float:
         return DEFAULT_RETRY_WAIT_SECONDS
 
 
-# Backwards-compatible name for the Chat Completions adapter.
-OpenAICompatibleAdapter = ChatCompletionsAdapter
+# Names from the spec: the Groq adapter is the plain Chat Completions adapter
+# (OpenAI uses it too); OpenAICompatibleAdapter is its earlier name here.
+GroqAdapter = OpenAICompatibleAdapter = ChatCompletionsAdapter
 
 
 @lru_cache(maxsize=1)
 def get_llm_adapter() -> LLMAdapter:
-    """Factory function. LLM_PROVIDER picks the provider and LLM_API picks the
-    OpenAI API (chat_completions or responses); a provider with a different SDK
-    needs its own LLMAdapter subclass.
+    """Factory function. LLM_PROVIDER picks the provider (openai, groq, gemini)
+    and LLM_API picks OpenAI's API (chat_completions or responses); a provider
+    with a different SDK needs its own LLMAdapter subclass.
 
     Cached so every caller shares one HTTP client and connection pool, instead
     of opening a new one per agent turn and per suggestion call.
     """
-    return ResponsesAdapter() if settings.llm_api == "responses" else ChatCompletionsAdapter()
+    if settings.llm_provider == "gemini":
+        return GeminiAdapter()
+    if settings.llm_api == "responses":
+        return ResponsesAdapter()
+    return ChatCompletionsAdapter()
 
 
 if __name__ == "__main__":
