@@ -19,6 +19,7 @@ st.set_page_config(page_title="ShopSense", page_icon="🛍️", layout="wide")
 
 # ---- Backend calls ----
 
+
 class ApiError(Exception):
     def __init__(self, message: str, code: str | None = None, trace_url: str | None = None):
         super().__init__(message)
@@ -29,18 +30,21 @@ class ApiError(Exception):
 def _call(method: str, path: str, *, timeout: float = 15.0, **kwargs) -> dict:
     try:
         response = httpx.request(method, f"{API_BASE}{path}", timeout=timeout, **kwargs)
-    except httpx.ConnectError:
-        raise ApiError("Cannot connect to the backend. Make sure `uvicorn app.main:app --port 8000` is running.", "backend_down")
-    except httpx.TimeoutException:
-        raise ApiError("The assistant took too long to respond. Please try again.", "timeout")
+    except httpx.ConnectError as e:
+        raise ApiError(
+            "Cannot connect to the backend. Make sure `uvicorn app.main:app --port 8000` is running.", "backend_down"
+        ) from e
+    except httpx.TimeoutException as e:
+        raise ApiError("The assistant took too long to respond. Please try again.", "timeout") from e
     if response.is_error:
         # The backend always answers {"error": {"code", "message"}}, plus
         # trace_url when an agent run failed.
         try:
             error = response.json()["error"]
-            raise ApiError(error["message"], error["code"], error.get("trace_url"))
-        except (ValueError, KeyError, TypeError):
-            raise ApiError(f"API error {response.status_code}", f"http_{response.status_code}")
+            message, code = error["message"], error["code"]
+        except (ValueError, KeyError, TypeError) as e:
+            raise ApiError(f"API error {response.status_code}", f"http_{response.status_code}") from e
+        raise ApiError(message, code, error.get("trace_url"))
     return response.json()
 
 
@@ -74,6 +78,7 @@ def get_backend_info() -> dict | None:
 
 # ---- Session state ----
 
+
 def start_session(session_id: str, messages: list[dict] | None = None) -> None:
     st.session_state.session_id = session_id
     st.session_state.messages = messages or []
@@ -88,6 +93,10 @@ def restore_or_create_session() -> None:
     if session_id:
         try:
             history = get_history(session_id)
+        except ApiError as e:
+            if e.code != "session_not_found":
+                raise
+        else:
             messages = [
                 {"role": m["role"], "content": m["content"]}
                 for m in history["messages"]
@@ -95,9 +104,6 @@ def restore_or_create_session() -> None:
             ]
             start_session(session_id, messages)
             return
-        except ApiError as e:
-            if e.code != "session_not_found":
-                raise
     start_session(create_session())
 
 
@@ -113,6 +119,7 @@ session_id = st.session_state.session_id
 
 
 # ---- Rendering helpers ----
+
 
 def pick_product_cards(result: dict) -> tuple[list[dict], bool]:
     """Cards for the products the agent actually linked in its answer.
@@ -242,23 +249,26 @@ if prompt:
     st.session_state.messages.append(user_message)
     render_message(user_message, len(st.session_state.messages) - 1)
 
-    with st.chat_message("assistant"):
-        with st.spinner("Searching and analyzing..."):
-            try:
-                result = send_message(session_id, prompt)
-            except ApiError as e:
-                result = None
-                st.session_state.messages.append({"role": "assistant", "content": str(e), "error": True, "trace_url": e.trace_url})
+    with st.chat_message("assistant"), st.spinner("Searching and analyzing..."):
+        try:
+            result = send_message(session_id, prompt)
+        except ApiError as e:
+            result = None
+            st.session_state.messages.append(
+                {"role": "assistant", "content": str(e), "error": True, "trace_url": e.trace_url}
+            )
 
     if result is not None:
         products, cited = pick_product_cards(result)
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": result["response"],
-            "products": products,
-            "products_cited": cited,
-            "meta": {k: result.get(k) for k in ("trace_url", "step_count", "total_tokens", "tool_calls_made")},
-        })
+        st.session_state.messages.append(
+            {
+                "role": "assistant",
+                "content": result["response"],
+                "products": products,
+                "products_cited": cited,
+                "meta": {k: result.get(k) for k in ("trace_url", "step_count", "total_tokens", "tool_calls_made")},
+            }
+        )
         st.session_state.suggestions = result.get("suggestions", [])
 
     # Re-run so the sidebar cart (which the agent may have just changed), the

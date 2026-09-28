@@ -15,12 +15,10 @@ Observation names are referenced by Langfuse evaluators and dashboards; keep the
 """
 
 import asyncio
+import contextlib
 import json
 
 from langfuse import observe, propagate_attributes
-
-# Imported first: creates the Langfuse client before any traced call runs.
-from app.tracing.langfuse_setup import get_langfuse
 
 from app.agent.prompts import build_system_prompt
 from app.agent.schemas import AgentResponse
@@ -32,6 +30,10 @@ from app.llm.adapter import get_llm_adapter
 from app.llm.errors import LLMError
 from app.llm.types import PROVIDER_ITEMS_KEY
 from app.tools.registry import TOOL_MAP, execute_tool, get_tool_schemas
+
+# Importing this module creates the Langfuse client. Import order doesn't matter:
+# @observe resolves its client when a traced function *runs*, not at import.
+from app.tracing.langfuse_setup import get_langfuse
 
 langfuse = get_langfuse()
 
@@ -91,9 +93,13 @@ async def _run_agent(session_id: str, user_message: str) -> AgentResponse:
     messages.append({"role": "user", "content": user_message})
 
     # Save the user message to DB
-    await queries.save_message(Message(
-        session_id=session_id, role="user", content=user_message,
-    ))
+    await queries.save_message(
+        Message(
+            session_id=session_id,
+            role="user",
+            content=user_message,
+        )
+    )
 
     # 3. ReAct loop
     llm = get_llm_adapter()
@@ -108,7 +114,9 @@ async def _run_agent(session_id: str, user_message: str) -> AgentResponse:
 
         # LLM call — traced as a generation inside the adapter
         response = await llm.chat(
-            messages, tools_schema, name="generate-agent-response",
+            messages,
+            tools_schema,
+            name="generate-agent-response",
             trace_metadata={"step": step_count, "operation": "agent_step"},
         )
         total_tokens += response.usage.get("total_tokens", 0)
@@ -118,10 +126,14 @@ async def _run_agent(session_id: str, user_message: str) -> AgentResponse:
             final_text = response.content or "I couldn't find a good answer. Could you rephrase?"
 
             # Save assistant response
-            await queries.save_message(Message(
-                session_id=session_id, role="assistant", content=final_text,
-                token_count=response.usage.get("total_tokens", 0),
-            ))
+            await queries.save_message(
+                Message(
+                    session_id=session_id,
+                    role="assistant",
+                    content=final_text,
+                    token_count=response.usage.get("total_tokens", 0),
+                )
+            )
 
             # The reply goes into the context the suggestions are generated from;
             # otherwise they'd follow up on the turn *before* this answer.
@@ -144,11 +156,13 @@ async def _run_agent(session_id: str, user_message: str) -> AgentResponse:
         # Add the assistant message with tool_calls
         assistant_msg = {"role": "assistant", "content": response.content, "tool_calls": []}
         for tc in response.tool_calls:
-            assistant_msg["tool_calls"].append({
-                "id": tc.id,
-                "type": "function",
-                "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-            })
+            assistant_msg["tool_calls"].append(
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                }
+            )
         if response.provider_items:
             # Responses API: reasoning items (+ the exact function calls) must go
             # back on the next call so the model keeps its chain of thought.
@@ -165,40 +179,52 @@ async def _run_agent(session_id: str, user_message: str) -> AgentResponse:
 
             # Track products found
             if tool_name == "search_products":
-                try:
-                    parsed = json.loads(result)
-                    for p in parsed.get("results", []):
-                        products_found.append(p)
-                except (json.JSONDecodeError, TypeError, AttributeError):
-                    pass
+                with contextlib.suppress(json.JSONDecodeError, TypeError, AttributeError):
+                    products_found.extend(json.loads(result).get("results", []))
 
             # Add tool result to messages
-            messages.append({
-                "role": "tool",
-                "content": result,
-                "tool_call_id": tc.id,
-            })
+            messages.append(
+                {
+                    "role": "tool",
+                    "content": result,
+                    "tool_call_id": tc.id,
+                }
+            )
 
             # Save tool result to DB
-            await queries.save_message(Message(
-                session_id=session_id, role="tool", content=result,
-                tool_name=tool_name, tool_call_id=tc.id,
-            ))
+            await queries.save_message(
+                Message(
+                    session_id=session_id,
+                    role="tool",
+                    content=result,
+                    tool_name=tool_name,
+                    tool_call_id=tc.id,
+                )
+            )
 
     # Guardrail: max steps reached. Rather than discarding the research, make one
     # last call with tools disabled so the model answers from what it gathered.
-    langfuse.update_current_span(level="WARNING", status_message=f"max_agent_steps ({settings.max_agent_steps}) reached")
+    langfuse.update_current_span(
+        level="WARNING", status_message=f"max_agent_steps ({settings.max_agent_steps}) reached"
+    )
     final_text, final_tokens = await _answer_from_research(llm, messages, tools_schema, products_found)
     total_tokens += final_tokens
-    await queries.save_message(Message(
-        session_id=session_id, role="assistant", content=final_text,
-    ))
+    await queries.save_message(
+        Message(
+            session_id=session_id,
+            role="assistant",
+            content=final_text,
+        )
+    )
     messages.append({"role": "assistant", "content": final_text})
     return AgentResponse(
-        response=final_text, tool_calls_made=tools_called,
-        products_found=products_found, suggestions=await generate_suggestions(messages),
+        response=final_text,
+        tool_calls_made=tools_called,
+        products_found=products_found,
+        suggestions=await generate_suggestions(messages),
         trace_url=await _current_trace_url(),
-        step_count=step_count, total_tokens=total_tokens,
+        step_count=step_count,
+        total_tokens=total_tokens,
     )
 
 
@@ -210,14 +236,18 @@ STEP_LIMIT_NOTE = (
 )
 
 
-async def _answer_from_research(llm, messages: list[dict], tools_schema: list[dict], products_found: list[dict]) -> tuple[str, int]:
+async def _answer_from_research(
+    llm, messages: list[dict], tools_schema: list[dict], products_found: list[dict]
+) -> tuple[str, int]:
     """Final answer after hitting max_agent_steps. Falls back to listing the
     search results if even this call fails, so the user always gets something."""
     try:
         response = await llm.chat(
             [*messages, {"role": "system", "content": STEP_LIMIT_NOTE}],
             # Tools stay in the request (the history references them) but can't be called.
-            tools_schema, tool_choice="none", name="answer-at-step-limit",
+            tools_schema,
+            tool_choice="none",
+            name="answer-at-step-limit",
             trace_metadata={"step": settings.max_agent_steps + 1, "operation": "final_answer_at_limit"},
         )
         if response.content:
@@ -228,15 +258,13 @@ async def _answer_from_research(llm, messages: list[dict], tools_schema: list[di
 
 
 def _results_fallback(products_found: list[dict]) -> str:
-    lines = [
-        f"- [{p.get('title') or p['url']}]({p['url']})"
-        for p in products_found[:5] if p.get("url")
-    ]
+    lines = [f"- [{p.get('title') or p['url']}]({p['url']})" for p in products_found[:5] if p.get("url")]
     if not lines:
         return "I couldn't finish researching this one. Could you tell me more about what you're looking for, such as a budget, brand, or must-have feature?"
     return (
         "I ran out of research steps before I could make a confident recommendation. "
-        "Here are the most relevant results I found:\n\n" + "\n".join(lines)
+        "Here are the most relevant results I found:\n\n"
+        + "\n".join(lines)
         + "\n\nTell me which one interests you, or narrow it down (budget, brand, features) and I'll dig deeper."
     )
 
@@ -253,11 +281,7 @@ def _replay_history(history: list[dict]) -> list[dict]:
     A history window can also start mid-turn (it's the newest N rows), so drop
     anything before the first user message.
     """
-    turns = [
-        {"role": m["role"], "content": m["content"]}
-        for m in history
-        if m["role"] in ("user", "assistant")
-    ]
+    turns = [{"role": m["role"], "content": m["content"]} for m in history if m["role"] in ("user", "assistant")]
     while turns and turns[0]["role"] != "user":
         turns.pop(0)
     return turns
@@ -306,7 +330,7 @@ async def _current_trace_url() -> str | None:
         return None
     try:
         return await asyncio.to_thread(langfuse.get_trace_url, trace_id=trace_id)
-    except Exception:
+    except Exception:  # noqa: BLE001 - best-effort debug link; never fails the answer
         return None
 
 

@@ -13,6 +13,7 @@ from app.main import app
 
 class _OfflineLangfuse:
     """Startup checks Langfuse auth; answer locally instead of calling the network."""
+
     def auth_check(self):
         return False
 
@@ -60,6 +61,7 @@ def test_sessions_are_unique(client):
 
 # ---- chat ----
 
+
 def test_chat_invalid_session(client):
     response = client.post("/sessions/nonexistent/chat", json={"message": "hello"})
     assert response.status_code == 404
@@ -91,9 +93,14 @@ def test_chat_returns_agent_response(client, session_id, monkeypatch):
 
     async def fake_run_agent(sid, message, **kwargs):
         calls.append((sid, message, kwargs))
-        return AgentResponse(response="Try the boAt Airdopes 141.", tool_calls_made=["search_products"],
-                             products_found=[{"title": "boAt", "url": "https://x"}], suggestions=["Compare"],
-                             step_count=2, total_tokens=1234)
+        return AgentResponse(
+            response="Try the boAt Airdopes 141.",
+            tool_calls_made=["search_products"],
+            products_found=[{"title": "boAt", "url": "https://x"}],
+            suggestions=["Compare"],
+            step_count=2,
+            total_tokens=1234,
+        )
 
     monkeypatch.setattr(chat_routes, "run_agent", fake_run_agent)
     response = client.post(f"/sessions/{session_id}/chat", json={"message": "earbuds"})
@@ -102,16 +109,19 @@ def test_chat_returns_agent_response(client, session_id, monkeypatch):
     assert body["response"] == "Try the boAt Airdopes 141."
     assert body["products_found"] and body["suggestions"] == ["Compare"]
     # The route picks the Langfuse trace id up front so failures can link to it.
-    (sid, message, kwargs), = calls
+    ((sid, message, kwargs),) = calls
     assert sid == session_id and message == "earbuds" and len(kwargs["langfuse_trace_id"]) == 32
 
 
-@pytest.mark.parametrize("error, status, code", [
-    (LLMRateLimitError("rate limited", retry_after=12), 503, "llm_rate_limited"),
-    (LLMTimeoutError("no response"), 504, "llm_timeout"),
-    (LLMUnavailableError("model missing"), 502, "llm_unavailable"),
-    (RuntimeError("secret internal detail: password=hunter2"), 500, "agent_error"),
-])
+@pytest.mark.parametrize(
+    ("error", "status", "code"),
+    [
+        (LLMRateLimitError("rate limited", retry_after=12), 503, "llm_rate_limited"),
+        (LLMTimeoutError("no response"), 504, "llm_timeout"),
+        (LLMUnavailableError("model missing"), 502, "llm_unavailable"),
+        (RuntimeError("secret internal detail: password=hunter2"), 500, "agent_error"),
+    ],
+)
 def test_chat_errors_are_structured_with_trace_url(client, session_id, monkeypatch, error, status, code):
     async def failing_run_agent(*args, **kwargs):
         raise error
@@ -133,6 +143,7 @@ def test_chat_errors_are_structured_with_trace_url(client, session_id, monkeypat
 
 
 # ---- cart & history ----
+
 
 def test_cart_empty(client, session_id):
     response = client.get(f"/sessions/{session_id}/cart")

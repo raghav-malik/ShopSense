@@ -3,6 +3,7 @@ from pydantic import BaseModel
 
 class AgentResponse(BaseModel):
     """The response returned by the agent to the API layer."""
+
     response: str
     tool_calls_made: list[str] = []
     products_found: list[dict] = []

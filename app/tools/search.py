@@ -22,6 +22,7 @@ SNIPPET_MAX_CHARS = 400
 
 class SearchProductsInput(BaseModel):
     """Input schema for the search_products tool."""
+
     reasoning: str = Field(
         ...,
         description="Explain WHY you are searching with this query. What is the user looking for, and how does this query address their needs? This field is logged for tracing.",
@@ -68,12 +69,14 @@ async def search_products(query: str, max_results: int = settings.max_search_res
         formatted = []
         for r in results:
             url = r.get("href", "")
-            formatted.append({
-                "title": r.get("title", ""),
-                "url": url,
-                "snippet": _truncate(r.get("body", ""), SNIPPET_MAX_CHARS),
-                "source": urlparse(url).netloc.removeprefix("www.") if url else "",
-            })
+            formatted.append(
+                {
+                    "title": r.get("title", ""),
+                    "url": url,
+                    "snippet": _truncate(r.get("body", ""), SNIPPET_MAX_CHARS),
+                    "source": urlparse(url).netloc.removeprefix("www.") if url else "",
+                }
+            )
 
         return {
             "results": formatted,
@@ -82,20 +85,36 @@ async def search_products(query: str, max_results: int = settings.max_search_res
         }
 
     except RatelimitException:
-        return {"error": "The search engines are rate limiting us", "error_type": "rate_limited", "results": [],
-                "hint": "Wait before searching again; answer from results you already have if you can."}
+        return {
+            "error": "The search engines are rate limiting us",
+            "error_type": "rate_limited",
+            "results": [],
+            "hint": "Wait before searching again; answer from results you already have if you can.",
+        }
     except TimeoutException:
-        return {"error": "The search timed out", "error_type": "timeout", "results": [],
-                "hint": "Retry once with a shorter, simpler query."}
+        return {
+            "error": "The search timed out",
+            "error_type": "timeout",
+            "results": [],
+            "hint": "Retry once with a shorter, simpler query.",
+        }
     except DDGSException as e:
         # ddgs raises (rather than returning []) when no engine finds anything.
         if "no results" in str(e).lower():
             return no_results
-        return {"error": f"Search failed: {e}", "error_type": "search_error", "results": [],
-                "hint": "Retry once with a different query."}
-    except Exception as e:
-        return {"error": f"Search failed: {type(e).__name__}", "error_type": "search_error", "results": [],
-                "hint": "Retry once with a different query."}
+        return {
+            "error": f"Search failed: {e}",
+            "error_type": "search_error",
+            "results": [],
+            "hint": "Retry once with a different query.",
+        }
+    except Exception as e:  # noqa: BLE001 - any search failure becomes a result the agent can act on
+        return {
+            "error": f"Search failed: {type(e).__name__}",
+            "error_type": "search_error",
+            "results": [],
+            "hint": "Retry once with a different query.",
+        }
 
 
 def _truncate(text: str, limit: int) -> str:

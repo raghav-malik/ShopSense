@@ -27,24 +27,38 @@ SIGNED_TOOL_CALL = {
 HISTORY = [
     {"role": "system", "content": "SYSTEM PROMPT"},
     {"role": "user", "content": "earbuds under 3000"},
-    {"role": "assistant", "content": None,
-     "tool_calls": [{k: v for k, v in SIGNED_TOOL_CALL.items() if k != "extra_content"}],
-     PROVIDER_ITEMS_KEY: [SIGNED_TOOL_CALL]},
+    {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{k: v for k, v in SIGNED_TOOL_CALL.items() if k != "extra_content"}],
+        PROVIDER_ITEMS_KEY: [SIGNED_TOOL_CALL],
+    },
     {"role": "tool", "tool_call_id": "call_1", "content": '{"results": []}'},
 ]
 
 
 def gemini_completion(tool_calls=None, content=None) -> ChatCompletion:
     """A Chat Completions response as Gemini's OpenAI-compatible endpoint returns it."""
-    return ChatCompletion.model_validate({
-        "id": "x", "object": "chat.completion", "created": 0, "model": "gemini-3.8-flash",
-        "choices": [{"index": 0, "finish_reason": "tool_calls" if tool_calls else "stop",
-                     "message": {"role": "assistant", "content": content, "tool_calls": tool_calls}}],
-        "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
-    })
+    return ChatCompletion.model_validate(
+        {
+            "id": "x",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "gemini-3.8-flash",
+            "choices": [
+                {
+                    "index": 0,
+                    "finish_reason": "tool_calls" if tool_calls else "stop",
+                    "message": {"role": "assistant", "content": content, "tool_calls": tool_calls},
+                }
+            ],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+        }
+    )
 
 
 # ---- config ----
+
 
 def test_gemini_provider_defaults():
     s = Settings(llm_provider="gemini", gemini_api_key="AIza-test")
@@ -66,11 +80,14 @@ def test_google_api_key_alias(monkeypatch):
     assert Settings(llm_provider="gemini").llm_api_key == "AIza-from-alias"
 
 
-@pytest.mark.parametrize("provider, api, expected", [
-    ("openai", "chat_completions", ChatCompletionsAdapter),
-    ("openai", "responses", ResponsesAdapter),
-    ("gemini", "chat_completions", GeminiAdapter),
-])
+@pytest.mark.parametrize(
+    ("provider", "api", "expected"),
+    [
+        ("openai", "chat_completions", ChatCompletionsAdapter),
+        ("openai", "responses", ResponsesAdapter),
+        ("gemini", "chat_completions", GeminiAdapter),
+    ],
+)
 def test_get_llm_adapter_picks_by_config(monkeypatch, provider, api, expected):
     monkeypatch.setattr(settings, "llm_provider", provider)
     monkeypatch.setattr(settings, "llm_api", api)
@@ -83,6 +100,7 @@ def test_get_llm_adapter_picks_by_config(monkeypatch, provider, api, expected):
 
 
 # ---- Gemini ----
+
 
 def test_gemini_request_replays_thought_signatures_and_omits_temperature():
     kwargs = GeminiAdapter()._build_request(HISTORY, get_tool_schemas(), "auto")
@@ -124,6 +142,7 @@ def test_chat_completions_strips_provider_items_and_sets_temperature():
 
 
 # ---- Responses API ----
+
 
 def test_responses_input_conversion():
     reasoning = {"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "ENC"}

@@ -108,12 +108,16 @@ class _OpenAISDKAdapter(LLMAdapter):
         for attempt in range(max_retries + 1):
             last_attempt = attempt == max_retries
             try:
-                response = await self._traced_call(kwargs, name=name, attempt=attempt + 1, trace_metadata=trace_metadata or {})
+                response = await self._traced_call(
+                    kwargs, name=name, attempt=attempt + 1, trace_metadata=trace_metadata or {}
+                )
                 break
             except RateLimitError as e:
                 wait = _retry_after_seconds(e)
                 if last_attempt or wait > MAX_RETRY_WAIT_SECONDS:
-                    raise LLMRateLimitError(f"Rate limited by {provider}; retry after ~{wait:.0f}s", retry_after=wait) from e
+                    raise LLMRateLimitError(
+                        f"Rate limited by {provider}; retry after ~{wait:.0f}s", retry_after=wait
+                    ) from e
             except openai.APITimeoutError as e:  # subclass of APIConnectionError: check first
                 if last_attempt:
                     raise LLMTimeoutError(f"{provider} didn't respond within {settings.llm_timeout:g}s") from e
@@ -130,7 +134,9 @@ class _OpenAISDKAdapter(LLMAdapter):
                 # e.g. Groq retiring llama-3.3-70b-versatile: a config problem, not transient.
                 raise LLMUnavailableError(f"{provider} doesn't exist or this key can't use it; check LLM_MODEL") from e
             except (openai.AuthenticationError, openai.PermissionDeniedError) as e:
-                raise LLMUnavailableError(f"{settings.llm_provider} rejected the API key (HTTP {e.status_code}); check {settings.llm_provider.upper()}_API_KEY") from e
+                raise LLMUnavailableError(
+                    f"{settings.llm_provider} rejected the API key (HTTP {e.status_code}); check {settings.llm_provider.upper()}_API_KEY"
+                ) from e
             except openai.APIStatusError as e:  # 400/413/422...: the request itself was rejected
                 raise LLMError(f"{provider} rejected the request (HTTP {e.status_code}): {e.message}") from e
             await asyncio.sleep(wait)
@@ -195,7 +201,9 @@ class ChatCompletionsAdapter(_OpenAISDKAdapter):
         return kwargs["messages"]
 
     def _model_parameters(self, kwargs, service_tier=None):
-        return _pick_params(kwargs, ("temperature", "max_completion_tokens", "reasoning_effort", "tool_choice"), service_tier)
+        return _pick_params(
+            kwargs, ("temperature", "max_completion_tokens", "reasoning_effort", "tool_choice"), service_tier
+        )
 
     def _success_update(self, kwargs, response):
         choice = response.choices[0]
@@ -217,7 +225,9 @@ class ChatCompletionsAdapter(_OpenAISDKAdapter):
                 output_total=usage.completion_tokens,
                 reasoning=_detail(usage, "completion_tokens_details", "reasoning_tokens"),
                 total=usage.total_tokens,
-            ) if usage else None,
+            )
+            if usage
+            else None,
             # Langfuse picks the price tier (standard/flex/priority) from
             # service_tier, and only the response says which ran.
             "model_parameters": self._model_parameters(kwargs, getattr(response, "service_tier", None)),
@@ -227,7 +237,11 @@ class ChatCompletionsAdapter(_OpenAISDKAdapter):
     def _to_llm_response(self, response):
         choice = response.choices[0]
         tool_calls = [
-            ToolCall(id=tc.id, type=tc.type, function=ToolCallFunction(name=tc.function.name, arguments=tc.function.arguments))
+            ToolCall(
+                id=tc.id,
+                type=tc.type,
+                function=ToolCallFunction(name=tc.function.name, arguments=tc.function.arguments),
+            )
             for tc in choice.message.tool_calls or []
         ] or None
         usage = response.usage
@@ -261,7 +275,8 @@ class GeminiAdapter(ChatCompletionsAdapter):
     def _build_request(self, messages, tools, tool_choice):
         replayed = [
             {**m, "tool_calls": m[PROVIDER_ITEMS_KEY]}
-            if m.get("role") == "assistant" and m.get(PROVIDER_ITEMS_KEY) else m
+            if m.get("role") == "assistant" and m.get(PROVIDER_ITEMS_KEY)
+            else m
             for m in messages
         ]
         kwargs = super()._build_request(replayed, tools, tool_choice)
@@ -334,7 +349,9 @@ class ResponsesAdapter(_OpenAISDKAdapter):
     def _trace_input(self, kwargs):
         """Instructions as a system message, then the input items: the same shape
         Langfuse's OpenAI integration logs for Responses calls."""
-        messages = ([{"role": "system", "content": kwargs["instructions"]}] if kwargs.get("instructions") else []) + kwargs["input"]
+        messages = (
+            [{"role": "system", "content": kwargs["instructions"]}] if kwargs.get("instructions") else []
+        ) + kwargs["input"]
         if kwargs.get("tools"):
             return {"messages": messages, "tools": kwargs["tools"]}
         return messages
@@ -360,7 +377,9 @@ class ResponsesAdapter(_OpenAISDKAdapter):
                 output_total=usage.output_tokens,
                 reasoning=_detail(usage, "output_tokens_details", "reasoning_tokens"),
                 total=usage.total_tokens,
-            ) if usage else None,
+            )
+            if usage
+            else None,
             "model_parameters": self._model_parameters(kwargs, getattr(response, "service_tier", None)),
             "metadata": {"status": response.status, **_incomplete_reason(response)},
         }
@@ -368,8 +387,7 @@ class ResponsesAdapter(_OpenAISDKAdapter):
     def _to_llm_response(self, response):
         text, calls, reasoning = _parse_responses_output(response)
         tool_calls = [
-            ToolCall(id=c.call_id, function=ToolCallFunction(name=c.name, arguments=c.arguments))
-            for c in calls
+            ToolCall(id=c.call_id, function=ToolCallFunction(name=c.name, arguments=c.arguments)) for c in calls
         ] or None
         if tool_calls:
             finish_reason = "tool_calls"
@@ -392,21 +410,29 @@ class ResponsesAdapter(_OpenAISDKAdapter):
             # Everything but the final text message: reasoning items and function
             # calls, to be passed back verbatim on the next call of this turn.
             provider_items=[
-                item.model_dump(exclude_none=True) for item in response.output
+                item.model_dump(exclude_none=True)
+                for item in response.output
                 if item.type in ("reasoning", "function_call")
-            ] or None,
+            ]
+            or None,
         )
 
 
 # ---- Responses API conversions ----
+
 
 def _chat_tool_to_responses(tool: dict) -> dict:
     """Chat Completions nests the definition under "function"; Responses is flat.
     strict=False keeps validation behaviour identical to Chat Completions: our
     Pydantic schemas have optional fields, and the registry validates anyway."""
     fn = tool["function"]
-    return {"type": "function", "name": fn["name"], "description": fn.get("description", ""),
-            "parameters": fn["parameters"], "strict": False}
+    return {
+        "type": "function",
+        "name": fn["name"],
+        "description": fn.get("description", ""),
+        "parameters": fn["parameters"],
+        "strict": False,
+    }
 
 
 def _messages_to_responses_input(messages: list[dict]) -> tuple[str | None, list[dict]]:
@@ -433,9 +459,15 @@ def _messages_to_responses_input(messages: list[dict]) -> tuple[str | None, list
             if m.get(PROVIDER_ITEMS_KEY):
                 items.extend(m[PROVIDER_ITEMS_KEY])
             else:
-                for tc in m.get("tool_calls") or []:
-                    items.append({"type": "function_call", "call_id": tc["id"],
-                                  "name": tc["function"]["name"], "arguments": tc["function"]["arguments"]})
+                items.extend(
+                    {
+                        "type": "function_call",
+                        "call_id": tc["id"],
+                        "name": tc["function"]["name"],
+                        "arguments": tc["function"]["arguments"],
+                    }
+                    for tc in m.get("tool_calls") or []
+                )
             if m.get("content") and not m.get("tool_calls"):
                 items.append({"role": "assistant", "content": m["content"]})
         elif role == "tool":
@@ -448,8 +480,10 @@ def _parse_responses_output(response):
     calls = [item for item in response.output if item.type == "function_call"]
     summaries = [
         part.text.strip()
-        for item in response.output if item.type == "reasoning"
-        for part in (item.summary or []) if part.text and part.text.strip()
+        for item in response.output
+        if item.type == "reasoning"
+        for part in (item.summary or [])
+        if part.text and part.text.strip()
     ]
     return response.output_text or "", calls, "\n\n".join(summaries) or None
 
@@ -460,6 +494,7 @@ def _incomplete_reason(response) -> dict:
 
 
 # ---- shared helpers ----
+
 
 def _pick_params(kwargs: dict, keys: tuple[str, ...], service_tier: str | None) -> dict:
     params = {k: kwargs[k] for k in keys if k in kwargs}
@@ -489,7 +524,9 @@ def _detail(usage, details_field: str, key: str) -> int:
     return (getattr(details, key, None) or 0) if details else 0
 
 
-def _usage_buckets(*, input_total: int, cached: int, cache_writes: int, output_total: int, reasoning: int, total: int) -> dict[str, int]:
+def _usage_buckets(
+    *, input_total: int, cached: int, cache_writes: int, output_total: int, reasoning: int, total: int
+) -> dict[str, int]:
     """Provider counts are inclusive (input includes cache reads and writes,
     output includes reasoning tokens). Langfuse wants mutually exclusive
     buckets, so split them out before sending. Bucket names match the price

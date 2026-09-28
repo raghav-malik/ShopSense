@@ -24,6 +24,7 @@ async def run(name: str, args: dict, session_id: str = "s1") -> dict:
 
 # ---- search_products ----
 
+
 @pytest.mark.network
 async def test_search_products_returns_results():
     result = await search_products("wireless earbuds under 3000 INR", max_results=3)
@@ -56,6 +57,7 @@ async def test_search_products_empty_results(monkeypatch):
 async def test_search_products_no_results_exception_is_not_an_error(monkeypatch):
     def raise_no_results(q, n):
         raise DDGSException("No results found.")
+
     monkeypatch.setattr(search, "_ddgs_text", raise_no_results)
     result = await search_products("earbuds", max_results=3)
     assert "error" not in result and result["results"] == []
@@ -64,6 +66,7 @@ async def test_search_products_no_results_exception_is_not_an_error(monkeypatch)
 async def test_search_products_rate_limit_has_type_and_hint(monkeypatch):
     def raise_rate_limit(q, n):
         raise RatelimitException("202 Ratelimit")
+
     monkeypatch.setattr(search, "_ddgs_text", raise_rate_limit)
     result = await search_products("earbuds", max_results=3)
     assert result["error_type"] == "rate_limited" and result["hint"] and result["results"] == []
@@ -75,6 +78,7 @@ async def test_search_max_results_is_capped():
 
 
 # ---- extract_product_info ----
+
 
 @pytest.mark.network
 async def test_extract_known_product_page():
@@ -110,6 +114,7 @@ async def test_extract_rejects_non_http_urls_before_fetching(url):
 
 # ---- compare_products ----
 
+
 async def test_compare_products_needs_two():
     result = await compare_products([{"name": "A", "price": "100", "url": "http://a.com"}])
     assert "error" in result
@@ -129,10 +134,15 @@ async def test_compare_products_builds_table():
 
 async def test_compare_escapes_pipes_and_shows_missing_rating_as_na():
     # Through the registry, validated products arrive with rating=None (SR-60).
-    result = await run("compare_products", {"products": [
-        {"name": "Buds | Pro", "price": "₹999", "url": "http://a.com"},
-        {"name": "B", "price": "₹1,999", "url": "http://b.com", "rating": "4.2 / 5"},
-    ]})
+    result = await run(
+        "compare_products",
+        {
+            "products": [
+                {"name": "Buds | Pro", "price": "₹999", "url": "http://a.com"},
+                {"name": "B", "price": "₹1,999", "url": "http://b.com", "rating": "4.2 / 5"},
+            ]
+        },
+    )
     assert "Buds \\| Pro" in result["comparison_table"]
     assert result["products"][0]["rating"] == "N/A"
     assert "None" not in result["comparison_table"]
@@ -145,8 +155,10 @@ async def test_compare_rejects_one_product_via_registry():
 
 # ---- manage_cart (real SQLite, isolated per test) ----
 
+
 async def test_cart_add_view_remove_clear(db):
     from app.db import queries
+
     session = await queries.create_session()
     sid = session.id
 
@@ -169,6 +181,7 @@ async def test_cart_add_view_remove_clear(db):
 
 async def test_cart_is_per_session(db):
     from app.db import queries
+
     a, b = await queries.create_session(), await queries.create_session()
     await manage_cart("add", a.id, product_name="X", price=1, url="https://x")
     assert (await manage_cart("view", b.id))["items"] == []
@@ -184,6 +197,7 @@ async def test_cart_add_without_url_fails_validation_with_json_error(db):
 
 # ---- get_preferences (real SQLite) ----
 
+
 async def test_preferences_set_and_get(db):
     set_list = await handle_preferences("set", key="preferred_brands", value='["Samsung", "Sony"]')
     assert set_list["preferences"] == {"preferred_brands": ["Samsung", "Sony"]}
@@ -193,6 +207,7 @@ async def test_preferences_set_and_get(db):
 
 
 # ---- registry ----
+
 
 async def test_registry_unknown_tool():
     result = await run("buy_now", {})
@@ -221,9 +236,11 @@ async def test_registry_strips_reasoning_and_injects_session(monkeypatch):
         received.update(kwargs)
         return {"ok": True}
 
-    executor, schema, model, needs_session = registry.TOOL_MAP["manage_cart"]
+    _executor, schema, model, needs_session = registry.TOOL_MAP["manage_cart"]
     monkeypatch.setitem(registry.TOOL_MAP, "manage_cart", (fake_cart, schema, model, needs_session))
-    await execute_tool("manage_cart", json.dumps({"reasoning": "user asked", "action": "view", "session_id": "hacked"}), "real-session")
+    await execute_tool(
+        "manage_cart", json.dumps({"reasoning": "user asked", "action": "view", "session_id": "hacked"}), "real-session"
+    )
     assert "reasoning" not in received
     assert received["session_id"] == "real-session"
 
@@ -231,7 +248,11 @@ async def test_registry_strips_reasoning_and_injects_session(monkeypatch):
 def test_tool_schemas_are_openai_function_format():
     schemas = get_tool_schemas()
     assert [s["function"]["name"] for s in schemas] == [
-        "search_products", "extract_product_info", "compare_products", "manage_cart", "get_preferences",
+        "search_products",
+        "extract_product_info",
+        "compare_products",
+        "manage_cart",
+        "get_preferences",
     ]
     for s in schemas:
         params = s["function"]["parameters"]

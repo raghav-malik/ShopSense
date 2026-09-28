@@ -13,21 +13,23 @@ import os
 
 # Must run before any `app` import: Settings() and the Langfuse client are
 # created at import time.
-os.environ.update({
-    "LLM_PROVIDER": "openai",
-    "LLM_API": "chat_completions",
-    "OPENAI_API_KEY": "sk-test-not-a-real-key",
-    "LANGFUSE_PUBLIC_KEY": "pk-lf-test",
-    "LANGFUSE_SECRET_KEY": "sk-lf-test",
-    "LANGFUSE_BASE_URL": "http://localhost:1",
-    "LANGFUSE_TRACING_ENABLED": "false",
-    "MAX_AGENT_STEPS": "10",
-})
+os.environ.update(
+    {
+        "LLM_PROVIDER": "openai",
+        "LLM_API": "chat_completions",
+        "OPENAI_API_KEY": "sk-test-not-a-real-key",
+        "LANGFUSE_PUBLIC_KEY": "pk-lf-test",
+        "LANGFUSE_SECRET_KEY": "sk-lf-test",
+        "LANGFUSE_BASE_URL": "http://localhost:1",
+        "LANGFUSE_TRACING_ENABLED": "false",
+        "MAX_AGENT_STEPS": "10",
+    }
+)
 
-import pytest  # noqa: E402
+import pytest
 
-from app.config import settings  # noqa: E402
-from app.db import database  # noqa: E402
+from app.config import settings
+from app.db import database
 
 
 @pytest.fixture

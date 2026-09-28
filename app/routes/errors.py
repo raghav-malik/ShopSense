@@ -27,6 +27,7 @@ class ErrorBody(BaseModel):
 
 class ErrorResponse(BaseModel):
     """Documents the error shape in the OpenAPI schema."""
+
     error: ErrorBody
 
 
@@ -72,5 +73,5 @@ def register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def unhandled_error(request: Request, exc: Exception) -> JSONResponse:
         # Full detail goes to the server log; the client gets no internals.
-        logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+        logger.error("Unhandled error on %s %s", request.method, request.url.path, exc_info=exc)
         return JSONResponse(_body("internal_error", "Something went wrong. Please try again."), status_code=500)

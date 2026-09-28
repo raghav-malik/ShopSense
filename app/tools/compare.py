@@ -5,6 +5,7 @@ from app.tools.base import pydantic_to_tool_schema
 
 class ProductForComparison(BaseModel):
     """A single product in a comparison request."""
+
     name: str
     price: str
     features: list[str] = Field(default_factory=list)
@@ -14,6 +15,7 @@ class ProductForComparison(BaseModel):
 
 class CompareProductsInput(BaseModel):
     """Input schema for the compare_products tool."""
+
     reasoning: str = Field(
         ...,
         description="Explain WHY you are comparing these products. What criteria matter most to the user?",
@@ -43,15 +45,16 @@ async def compare_products(products: list[dict]) -> dict:
 
     # Build comparison rows. `or` rather than a .get() default: a validated
     # product carries rating=None, which should still show as N/A.
-    rows = []
-    for p in products:
-        rows.append({
+    rows = [
+        {
             "name": p.get("name") or "Unknown",
             "price": p.get("price") or "N/A",
             "features": ", ".join((p.get("features") or [])[:3]),
             "rating": p.get("rating") or "N/A",
             "buy_link": p.get("url", ""),
-        })
+        }
+        for p in products
+    ]
 
     # Build markdown table
     header = "| Product | Price | Key Features | Rating | Link |"
@@ -61,7 +64,7 @@ async def compare_products(products: list[dict]) -> dict:
         for r in rows
     ]
 
-    comparison_table = "\n".join([header, separator] + table_rows)
+    comparison_table = "\n".join([header, separator, *table_rows])
 
     return {
         "comparison_table": comparison_table,

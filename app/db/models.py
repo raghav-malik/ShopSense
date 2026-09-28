@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field
 
@@ -10,7 +10,7 @@ def new_id() -> str:
 
 def now_iso() -> str:
     # datetime.utcnow() is deprecated since Python 3.12.
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class Session(BaseModel):

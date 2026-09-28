@@ -71,18 +71,22 @@ async def chat(session_id: str, request: ChatRequest):
         status, message = next((s, m) for cls, s, m in LLM_ERRORS if isinstance(e, cls))
         logger.warning("Agent LLM failure (%s) for session %s: %s", e.code, session_id, e)
         headers = {"Retry-After": str(math.ceil(e.retry_after))} if e.retry_after else None
-        raise api_error(status, e.code, message, trace_url=await _trace_url(trace_id), headers=headers)
-    except Exception:
+        raise api_error(status, e.code, message, trace_url=await _trace_url(trace_id), headers=headers) from e
+    except Exception as e:  # any other failure becomes a structured 500; details go to the log
         logger.exception("Agent failed for session %s", session_id)
-        raise api_error(500, "agent_error", "Something went wrong while answering. Please try again.",
-                        trace_url=await _trace_url(trace_id))
+        raise api_error(
+            500,
+            "agent_error",
+            "Something went wrong while answering. Please try again.",
+            trace_url=await _trace_url(trace_id),
+        ) from e
 
 
 async def _trace_url(trace_id: str) -> str | None:
     # get_trace_url looks up the project id over HTTP the first time; keep it off the event loop.
     try:
         return await asyncio.to_thread(get_langfuse().get_trace_url, trace_id=trace_id)
-    except Exception:
+    except Exception:  # noqa: BLE001 - the debug link is optional; never mask the real error
         return None
 
 

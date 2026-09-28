@@ -18,7 +18,11 @@ from app.llm.types import PROVIDER_ITEMS_KEY, LLMResponse, ToolCall, ToolCallFun
 from app.tools import search
 
 SEARCH_HITS = [
-    {"title": "boAt Airdopes 141", "href": "https://www.amazon.in/dp/B09N3ZNHTY", "body": "₹1,099. 42H playback, ENx mics."},
+    {
+        "title": "boAt Airdopes 141",
+        "href": "https://www.amazon.in/dp/B09N3ZNHTY",
+        "body": "₹1,099. 42H playback, ENx mics.",
+    },
     {"title": "Noise Buds VS104", "href": "https://www.flipkart.com/noise-vs104/p/1", "body": "₹999. 45H playback."},
 ]
 
@@ -32,8 +36,14 @@ def call(name: str, args: dict, call_id: str) -> ToolCall:
 
 
 def tool_calls(*calls: ToolCall, tokens: int = 100, provider_items: list[dict] | None = None) -> LLMResponse:
-    return LLMResponse(content=None, tool_calls=list(calls), finish_reason="tool_calls",
-                       usage=usage(tokens), model="fake", provider_items=provider_items)
+    return LLMResponse(
+        content=None,
+        tool_calls=list(calls),
+        finish_reason="tool_calls",
+        usage=usage(tokens),
+        model="fake",
+        provider_items=provider_items,
+    )
 
 
 def answer(text: str, tokens: int = 200) -> LLMResponse:
@@ -48,8 +58,15 @@ class FakeLLM(LLMAdapter):
         self.calls: list[dict] = []
 
     async def chat(self, messages, tools=None, *, name="generate-response", tool_choice="auto", trace_metadata=None):
-        self.calls.append({"messages": copy.deepcopy(messages), "tools": tools, "name": name,
-                           "tool_choice": tool_choice, "trace_metadata": trace_metadata})
+        self.calls.append(
+            {
+                "messages": copy.deepcopy(messages),
+                "tools": tools,
+                "name": name,
+                "tool_choice": tool_choice,
+                "trace_metadata": trace_metadata,
+            }
+        )
         if name == "generate-suggestions":
             return answer("1. Compare these two\n- Show cheaper options")
         item = self.script.pop(0)
@@ -69,6 +86,7 @@ def fake_llm(monkeypatch):
         monkeypatch.setattr(core, "get_llm_adapter", lambda: llm)
         monkeypatch.setattr(suggestions_module, "get_llm_adapter", lambda: llm)
         return llm
+
     return install
 
 
@@ -88,6 +106,7 @@ def search_call(call_id="call_1", query="wireless earbuds under 3000"):
 
 
 # ---- the basic loop ----
+
 
 async def test_tool_call_then_answer(session, fake_llm):
     llm = fake_llm(tool_calls(search_call(), tokens=150), answer("The boAt Airdopes 141 at ₹1,099 is my pick."))
@@ -136,6 +155,7 @@ async def test_parallel_tool_calls_all_run(session, fake_llm):
 
 # ---- tool errors go back to the model, the loop keeps going ----
 
+
 async def test_unknown_tool_error_is_fed_back(session, fake_llm):
     llm = fake_llm(tool_calls(call("buy_now", {"reasoning": "x"}, "call_1")), answer("Sorry, I can't buy directly."))
     result = await core.run_agent(session.id, "buy it")
@@ -145,9 +165,20 @@ async def test_unknown_tool_error_is_fed_back(session, fake_llm):
 
 
 async def test_validation_error_lets_the_model_self_correct(session, fake_llm):
-    bad = call("manage_cart", {"reasoning": "user asked", "action": "add", "product_name": "boAt Airdopes 141"}, "call_1")
-    fixed = call("manage_cart", {"reasoning": "retry with url", "action": "add", "product_name": "boAt Airdopes 141",
-                                 "price": 1099, "url": "https://www.amazon.in/dp/B09N3ZNHTY"}, "call_2")
+    bad = call(
+        "manage_cart", {"reasoning": "user asked", "action": "add", "product_name": "boAt Airdopes 141"}, "call_1"
+    )
+    fixed = call(
+        "manage_cart",
+        {
+            "reasoning": "retry with url",
+            "action": "add",
+            "product_name": "boAt Airdopes 141",
+            "price": 1099,
+            "url": "https://www.amazon.in/dp/B09N3ZNHTY",
+        },
+        "call_2",
+    )
     llm = fake_llm(tool_calls(bad), tool_calls(fixed), answer("Added to your cart."))
 
     result = await core.run_agent(session.id, "add the boAt to my cart")
@@ -160,6 +191,7 @@ async def test_validation_error_lets_the_model_self_correct(session, fake_llm):
 
 
 # ---- guardrail: max steps ----
+
 
 async def test_max_steps_forces_a_final_answer(session, fake_llm, monkeypatch):
     monkeypatch.setattr(settings, "max_agent_steps", 2)
@@ -188,6 +220,7 @@ async def test_max_steps_falls_back_to_results_if_final_call_fails(session, fake
 
 # ---- failures and edge cases ----
 
+
 async def test_llm_error_propagates_to_the_caller(session, fake_llm):
     fake_llm(LLMRateLimitError("rate limited", retry_after=5))
     with pytest.raises(LLMRateLimitError):
@@ -204,6 +237,7 @@ async def test_unknown_session(db, fake_llm):
 
 
 # ---- context building ----
+
 
 async def test_system_prompt_includes_preferences_cart_and_budget(session, fake_llm):
     await queries.set_preference("preferred_brands", ["Samsung"])
@@ -239,8 +273,10 @@ async def test_history_is_replayed_as_text_without_tool_rows(session, fake_llm):
 
 async def test_provider_items_are_carried_to_the_next_call(session, fake_llm):
     # Responses API: reasoning items must go back with the function calls they preceded.
-    items = [{"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "ENC"},
-             {"type": "function_call", "call_id": "call_1", "name": "search_products", "arguments": "{}"}]
+    items = [
+        {"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "ENC"},
+        {"type": "function_call", "call_id": "call_1", "name": "search_products", "arguments": "{}"},
+    ]
     llm = fake_llm(tool_calls(search_call(), provider_items=items), answer("Done."))
     await core.run_agent(session.id, "find earbuds")
     assistant = llm.agent_calls[1]["messages"][-2]

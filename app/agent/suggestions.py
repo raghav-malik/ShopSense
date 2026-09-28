@@ -37,20 +37,19 @@ async def generate_suggestions(conversation_messages: list[dict]) -> list[str]:
         ]
 
         response = await llm.chat(  # No tools needed
-            messages, name="generate-suggestions", trace_metadata={"operation": "suggestions"},
+            messages,
+            name="generate-suggestions",
+            trace_metadata={"operation": "suggestions"},
         )
         if not response.content:
             return []
 
         # Parse: one suggestion per line, list markers and stray quotes removed
-        suggestions = [
-            _LIST_MARKER.sub("", line).strip().strip("\"'")
-            for line in response.content.strip().split("\n")
-        ]
+        suggestions = [_LIST_MARKER.sub("", line).strip().strip("\"'") for line in response.content.strip().split("\n")]
         return [s for s in suggestions if s][:3]  # Cap at 3
 
-    except Exception:
-        return []  # Suggestions are best-effort, never fail the main response
+    except Exception:  # noqa: BLE001 - suggestions are best-effort, never fail the main response
+        return []
 
 
 def _format_conversation_for_suggestions(messages: list[dict]) -> str:

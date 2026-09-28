@@ -13,6 +13,7 @@ CURRENCY_SYMBOLS = {"INR": "₹", "USD": "$", "EUR": "€", "GBP": "£"}
 
 class ExtractProductInput(BaseModel):
     """Input schema for the extract_product_info tool."""
+
     reasoning: str = Field(
         ...,
         description="Explain WHY you are extracting info from this URL. What product detail are you looking for?",
@@ -56,37 +57,55 @@ class FetchError(Exception):
 
 async def _fetch_html(url: str) -> str:
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=FETCH_TIMEOUT, max_redirects=MAX_REDIRECTS) as client:
-            async with client.stream("GET", url, headers=HEADERS) as response:
-                status = response.status_code
-                if status in (401, 403, 429, 503):
-                    raise FetchError("blocked", f"HTTP {status}: the site refused automated access", _USE_SNIPPET)
-                if status in (404, 410):
-                    raise FetchError("not_found", f"HTTP {status}: the page doesn't exist", "The URL may be wrong or outdated; don't guess variations of it.")
-                if status >= 400:
-                    raise FetchError("http_error", f"HTTP {status} fetching the page", _USE_SNIPPET)
-                content_type = response.headers.get("content-type", "")
-                if content_type and "html" not in content_type:
-                    raise FetchError("not_html", f"Not a web page (content-type {content_type.split(';')[0]})", "Use a product page URL, not an image, PDF or file.")
+        async with (
+            httpx.AsyncClient(follow_redirects=True, timeout=FETCH_TIMEOUT, max_redirects=MAX_REDIRECTS) as client,
+            client.stream("GET", url, headers=HEADERS) as response,
+        ):
+            status = response.status_code
+            if status in (401, 403, 429, 503):
+                raise FetchError("blocked", f"HTTP {status}: the site refused automated access", _USE_SNIPPET)
+            if status in (404, 410):
+                raise FetchError(
+                    "not_found",
+                    f"HTTP {status}: the page doesn't exist",
+                    "The URL may be wrong or outdated; don't guess variations of it.",
+                )
+            if status >= 400:
+                raise FetchError("http_error", f"HTTP {status} fetching the page", _USE_SNIPPET)
+            content_type = response.headers.get("content-type", "")
+            if content_type and "html" not in content_type:
+                raise FetchError(
+                    "not_html",
+                    f"Not a web page (content-type {content_type.split(';')[0]})",
+                    "Use a product page URL, not an image, PDF or file.",
+                )
 
-                body = bytearray()
-                async for chunk in response.aiter_bytes():
-                    body.extend(chunk)
-                    if len(body) >= MAX_PAGE_BYTES:
-                        break  # product metadata sits in <head>; the first 3MB is plenty
-                return body.decode(response.encoding or "utf-8", errors="replace")
+            body = bytearray()
+            async for chunk in response.aiter_bytes():
+                body.extend(chunk)
+                if len(body) >= MAX_PAGE_BYTES:
+                    break  # product metadata sits in <head>; the first 3MB is plenty
+            return body.decode(response.encoding or "utf-8", errors="replace")
     except httpx.TimeoutException as e:
         # Connect (5s) and read (10s) timeouts differ; say which one hit.
         phase = "connect" if isinstance(e, httpx.ConnectTimeout) else "respond"
-        raise FetchError("timeout", f"The site didn't {phase} in time", _USE_SNIPPET)
-    except httpx.ConnectError:
-        raise FetchError("connection_failed", "Couldn't connect (unknown host, refused, or TLS error)", "Check the URL came from the search results; don't invent URLs.")
-    except httpx.TooManyRedirects:
-        raise FetchError("too_many_redirects", f"More than {MAX_REDIRECTS} redirects", _USE_SNIPPET)
-    except (httpx.InvalidURL, httpx.UnsupportedProtocol):
-        raise FetchError("invalid_url", "The URL isn't a valid http(s) address", "Use a URL exactly as it appeared in the search results.")
+        raise FetchError("timeout", f"The site didn't {phase} in time", _USE_SNIPPET) from e
+    except httpx.ConnectError as e:
+        raise FetchError(
+            "connection_failed",
+            "Couldn't connect (unknown host, refused, or TLS error)",
+            "Check the URL came from the search results; don't invent URLs.",
+        ) from e
+    except httpx.TooManyRedirects as e:
+        raise FetchError("too_many_redirects", f"More than {MAX_REDIRECTS} redirects", _USE_SNIPPET) from e
+    except (httpx.InvalidURL, httpx.UnsupportedProtocol) as e:
+        raise FetchError(
+            "invalid_url",
+            "The URL isn't a valid http(s) address",
+            "Use a URL exactly as it appeared in the search results.",
+        ) from e
     except httpx.RequestError as e:
-        raise FetchError("network_error", f"Network error: {type(e).__name__}", _USE_SNIPPET)
+        raise FetchError("network_error", f"Network error: {type(e).__name__}", _USE_SNIPPET) from e
 
 
 async def extract_product_info(url: str) -> dict:
@@ -134,9 +153,14 @@ async def extract_product_info(url: str) -> dict:
             "source": _get_domain(url),
         }
 
-    except Exception as e:  # malformed HTML/JSON-LD we didn't anticipate
-        return {"error": f"Couldn't read product details: {type(e).__name__}", "error_type": "parse_error",
-                "hint": _USE_SNIPPET, "buy_link": url, "available": False}
+    except Exception as e:  # noqa: BLE001 - malformed HTML/JSON-LD we didn't anticipate
+        return {
+            "error": f"Couldn't read product details: {type(e).__name__}",
+            "error_type": "parse_error",
+            "hint": _USE_SNIPPET,
+            "buy_link": url,
+            "available": False,
+        }
 
 
 def _extract_json_ld(soup: BeautifulSoup) -> dict:
@@ -213,7 +237,9 @@ def _extract_og_tags(soup: BeautifulSoup) -> dict:
         result["name"] = og_title.get("content", "")
     og_price = soup.find("meta", property="product:price:amount") or soup.find("meta", property="og:price:amount")
     if og_price:
-        og_currency = soup.find("meta", property="product:price:currency") or soup.find("meta", property="og:price:currency")
+        og_currency = soup.find("meta", property="product:price:currency") or soup.find(
+            "meta", property="og:price:currency"
+        )
         result["price"] = _format_price(og_price.get("content"), og_currency.get("content") if og_currency else None)
     og_image = soup.find("meta", property="og:image")
     if og_image:
@@ -231,7 +257,7 @@ def _extract_meta(soup: BeautifulSoup) -> dict:
     if desc:
         content = desc.get("content", "")
         # Try to find a price pattern
-        price_match = re.search(r'₹[\d,]+(?:\.\d{2})?|Rs\.?\s*[\d,]+', content)
+        price_match = re.search(r"₹[\d,]+(?:\.\d{2})?|Rs\.?\s*[\d,]+", content)
         if price_match:
             result["price"] = price_match.group()
     return result

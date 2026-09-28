@@ -1,12 +1,10 @@
-from typing import Type
-
 from pydantic import BaseModel
 
 
 def pydantic_to_tool_schema(
     name: str,
     description: str,
-    input_model: Type[BaseModel],
+    input_model: type[BaseModel],
 ) -> dict:
     """
     Build an OpenAI-compatible tool schema from a Pydantic model.

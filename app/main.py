@@ -4,13 +4,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-# Imported first: creates the Langfuse client before any traced code runs.
-from app.tracing.langfuse_setup import get_langfuse, shutdown_langfuse
-
 from app.config import settings
 from app.db.database import close_db, init_db
 from app.routes import chat, sessions
 from app.routes.errors import register_error_handlers
+from app.tracing.langfuse_setup import get_langfuse, shutdown_langfuse
 
 # Root at WARNING: at INFO, third-party clients (httpx, the search engines behind
 # ddgs) log every outgoing request, including users' full search queries.
@@ -28,13 +26,15 @@ async def lifespan(app: FastAPI):
     # startup, instead of traces silently going nowhere. Never blocks startup.
     try:
         langfuse_ok = await asyncio.to_thread(get_langfuse().auth_check)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - tracing problems are reported, never block startup
         langfuse_ok = False
         logger.warning("Langfuse auth check failed (%s): %s", settings.langfuse_base_url, e)
     app.state.langfuse_project_url = await _langfuse_project_url() if langfuse_ok else None
     logger.info(
         "ShopSense started. Database initialized. LLM: %s/%s. Langfuse: %s",
-        settings.llm_provider, settings.llm_model, "connected" if langfuse_ok else "NOT connected (traces will be lost)",
+        settings.llm_provider,
+        settings.llm_model,
+        "connected" if langfuse_ok else "NOT connected (traces will be lost)",
     )
 
     yield
@@ -64,7 +64,7 @@ async def _langfuse_project_url() -> str | None:
     try:
         projects = await asyncio.to_thread(get_langfuse().api.projects.get)
         return f"{settings.langfuse_base_url}/project/{projects.data[0].id}"
-    except Exception:
+    except Exception:  # noqa: BLE001 - the link is a convenience; /health falls back to the base URL
         return None
 
 

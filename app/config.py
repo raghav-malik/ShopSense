@@ -32,22 +32,35 @@ class Settings(BaseSettings):
     """Application configuration loaded from environment variables."""
 
     # LLM — every provider speaks the OpenAI Chat Completions API; OpenAI also the Responses API
-    llm_provider: LLMProvider = Field(default="openai", description="Which LLM provider to call: 'openai' (default), 'groq' or 'gemini'")
+    llm_provider: LLMProvider = Field(
+        default="openai", description="Which LLM provider to call: 'openai' (default), 'groq' or 'gemini'"
+    )
     llm_api: LLMApi = Field(
         default="chat_completions",
         description="'chat_completions' (default) or 'responses' (OpenAI only: reasoning together with tools)",
     )
-    groq_api_key: str | None = Field(default=None, description="Groq API key from console.groq.com (required when LLM_PROVIDER=groq)")
-    openai_api_key: str | None = Field(default=None, description="OpenAI API key from platform.openai.com (required when LLM_PROVIDER=openai)")
+    groq_api_key: str | None = Field(
+        default=None, description="Groq API key from console.groq.com (required when LLM_PROVIDER=groq)"
+    )
+    openai_api_key: str | None = Field(
+        default=None, description="OpenAI API key from platform.openai.com (required when LLM_PROVIDER=openai)"
+    )
     gemini_api_key: str | None = Field(
         default=None,
         validation_alias=AliasChoices("GEMINI_API_KEY", "GOOGLE_API_KEY"),
         description="Gemini API key from aistudio.google.com (required when LLM_PROVIDER=gemini)",
     )
-    llm_model: str | None = Field(default=None, description="Model ID; defaults per provider (gpt-6-luna on OpenAI, gpt-oss-120b on Groq, gemini-3.8-flash on Gemini)")
+    llm_model: str | None = Field(
+        default=None,
+        description="Model ID; defaults per provider (gpt-6-luna on OpenAI, gpt-oss-120b on Groq, gemini-3.8-flash on Gemini)",
+    )
     llm_base_url: str | None = Field(default=None, description="OpenAI-compatible base URL; defaults per provider")
-    llm_reasoning_effort: str | None = Field(default=None, description="reasoning effort sent to the model; defaults per provider and API")
-    llm_max_tokens: int = Field(default=4096, description="Max tokens per LLM response (max_completion_tokens / max_output_tokens)")
+    llm_reasoning_effort: str | None = Field(
+        default=None, description="reasoning effort sent to the model; defaults per provider and API"
+    )
+    llm_max_tokens: int = Field(
+        default=4096, description="Max tokens per LLM response (max_completion_tokens / max_output_tokens)"
+    )
     llm_temperature: float = Field(default=0.3, description="Lower = more deterministic tool selection")
     llm_timeout: float = Field(default=60.0, description="Seconds to wait for one LLM response before retrying once")
 

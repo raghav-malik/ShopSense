@@ -9,6 +9,7 @@ from app.tools.base import pydantic_to_tool_schema
 
 class ManageCartInput(BaseModel):
     """Input schema for the manage_cart tool."""
+
     reasoning: str = Field(
         ...,
         description="Explain WHY you are performing this cart action. What did the user ask for?",

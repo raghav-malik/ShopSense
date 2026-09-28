@@ -9,6 +9,7 @@ from app.tools.base import pydantic_to_tool_schema
 
 class PreferencesInput(BaseModel):
     """Input schema for the get_preferences tool."""
+
     reasoning: str = Field(
         ...,
         description="Explain WHY you are reading or updating preferences. What preference did the user express?",

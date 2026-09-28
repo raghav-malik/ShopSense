@@ -7,7 +7,6 @@ Import this module before anything traced.
 """
 
 import re
-from typing import Optional
 
 from langfuse import Langfuse
 from langfuse.types import MaskOtelSpansParams, MaskOtelSpansResult, OtelSpanPatch
@@ -32,7 +31,7 @@ def _redact(text: str) -> str:
     return text
 
 
-def mask_otel_spans(*, params: MaskOtelSpansParams) -> Optional[MaskOtelSpansResult]:
+def mask_otel_spans(*, params: MaskOtelSpansParams) -> MaskOtelSpansResult | None:
     patches = {}
     for identifier, span in params.spans.items():
         replacements = {

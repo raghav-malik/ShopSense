@@ -3,8 +3,8 @@ import json
 from app.db.database import get_db
 from app.db.models import CartItem, Message, Session, new_id, now_iso
 
-
 # ---- Sessions ----
+
 
 async def create_session(session_id: str | None = None) -> Session:
     """Create a session. `session_id` is for tests and scripts; the API always generates one."""
@@ -20,15 +20,16 @@ async def create_session(session_id: str | None = None) -> Session:
 
 async def get_session(session_id: str) -> Session | None:
     db = await get_db()
-    row = await db.execute_fetchall(
-        "SELECT * FROM sessions WHERE id = ?", (session_id,)
-    )
+    row = await db.execute_fetchall("SELECT * FROM sessions WHERE id = ?", (session_id,))
     if not row:
         return None
     r = row[0]
     return Session(
-        id=r["id"], created_at=r["created_at"], updated_at=r["updated_at"],
-        budget=r["budget"], context_summary=r["context_summary"],
+        id=r["id"],
+        created_at=r["created_at"],
+        updated_at=r["updated_at"],
+        budget=r["budget"],
+        context_summary=r["context_summary"],
     )
 
 
@@ -43,12 +44,22 @@ async def update_session_budget(session_id: str, budget: float):
 
 # ---- Messages ----
 
+
 async def save_message(msg: Message):
     db = await get_db()
     await db.execute(
         """INSERT INTO messages (id, session_id, role, content, tool_name, tool_call_id, created_at, token_count)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (msg.id, msg.session_id, msg.role, msg.content, msg.tool_name, msg.tool_call_id, msg.created_at, msg.token_count),
+        (
+            msg.id,
+            msg.session_id,
+            msg.role,
+            msg.content,
+            msg.tool_name,
+            msg.tool_call_id,
+            msg.created_at,
+            msg.token_count,
+        ),
     )
     await db.commit()
 
@@ -70,12 +81,16 @@ async def get_messages(session_id: str, limit: int = 50) -> list[dict]:
            ) ORDER BY created_at ASC, _seq ASC""",
         (session_id, limit),
     )
-    return [{k: r[k] for k in r.keys() if k != "_seq"} for r in rows]
+    # .keys() is required: iterating a sqlite3.Row yields its values, not its column names.
+    return [{k: r[k] for k in r.keys() if k != "_seq"} for r in rows]  # noqa: SIM118
 
 
 # ---- Cart ----
 
-async def add_to_cart(session_id: str, product_name: str, price: float | None, url: str, source: str | None = None) -> CartItem:
+
+async def add_to_cart(
+    session_id: str, product_name: str, price: float | None, url: str, source: str | None = None
+) -> CartItem:
     db = await get_db()
     item = CartItem(session_id=session_id, product_name=product_name, price=price, url=url, source=source)
     await db.execute(
@@ -114,6 +129,7 @@ async def clear_cart(session_id: str):
 
 # ---- Preferences ----
 
+
 async def get_all_preferences() -> dict:
     db = await get_db()
     rows = await db.execute_fetchall("SELECT key, value FROM preferences")
@@ -148,10 +164,13 @@ if __name__ == "__main__":
             try:
                 session = await create_session()
                 print(f"created session: {session.id}")
-                await save_message(Message(session_id=session.id, role="user", content="Find me wireless earbuds under 3000"))
+                await save_message(
+                    Message(session_id=session.id, role="user", content="Find me wireless earbuds under 3000")
+                )
                 messages = await get_messages(session.id)
                 print(f"retrieved {len(messages)} message(s): {messages[0]['role']}: {messages[0]['content']!r}")
-                assert messages[0]["content"] == "Find me wireless earbuds under 3000"
+                if messages[0]["content"] != "Find me wireless earbuds under 3000":
+                    raise SystemExit("FAILED: retrieved message doesn't match what was saved")
                 print("OK")
             finally:
                 await close_db()

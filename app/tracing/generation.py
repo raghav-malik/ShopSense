@@ -15,8 +15,9 @@ replaces the real LLM result or error.
 """
 
 import logging
+from collections.abc import Callable
 from contextlib import AbstractContextManager
-from typing import Any, Callable
+from typing import Any
 
 from app.tracing.langfuse_setup import get_langfuse
 
@@ -61,11 +62,14 @@ class GenerationTrace:
         self._update(build_update, "success")
 
     def error(self, exc: BaseException) -> None:
-        self._update(lambda: {
-            "output": _error_output(exc),
-            "level": "ERROR",
-            "status_message": f"{type(exc).__name__}: {exc}",
-        }, "error")
+        self._update(
+            lambda: {
+                "output": _error_output(exc),
+                "level": "ERROR",
+                "status_message": f"{type(exc).__name__}: {exc}",
+            },
+            "error",
+        )
 
     def _update(self, build_update: Callable[[], dict], label: str) -> None:
         if self._generation is None:

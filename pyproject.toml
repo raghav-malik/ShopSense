@@ -30,6 +30,53 @@ test = ["pytest==9.1.1", "pytest-asyncio==1.4.0", "pytest-cov==7.1.0"]
 package = false
 
 
+# ---- ruff ----
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+# Explicit list: ruff 0.16 turned on 413 rules by default, so relying on the
+# defaults would change the gate on every ruff upgrade.
+select = [
+    "E", "W", "F",   # pycodestyle, pyflakes
+    "I",             # import sorting
+    "N",             # pep8 naming
+    "UP",            # modern syntax for the target Python
+    "B",             # bugbear: likely bugs
+    "SIM", "C4", "PERF", "RUF",
+    "ASYNC",         # blocking calls in async code
+    "S",             # bandit security checks
+    "BLE",           # blind `except Exception`
+    "TRY",           # exception-handling style (raise from, etc.)
+    "LOG", "G",      # logging mistakes
+    "T20",           # no print() in app code
+    "DTZ",           # timezone-aware datetimes
+    "PTH",           # pathlib over os.path
+    "PT",            # pytest style
+    "FAST",          # FastAPI-specific rules
+]
+ignore = [
+    "E501",    # line length is the formatter's job; long strings/URLs are fine
+    "TRY003",  # messages passed to exception constructors are useful context here
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "S101",    # assert is how pytest tests are written
+    "PT018",   # composite assertions read fine in these tests
+]
+# `if __name__ == "__main__"` smoke tests print their results on purpose.
+"app/llm/adapter.py" = ["T201"]
+"app/agent/core.py" = ["T201"]
+"app/db/queries.py" = ["T201"]
+"app/tools/search.py" = ["T201"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+
 # ---- pytest ----
 
 [tool.pytest]
