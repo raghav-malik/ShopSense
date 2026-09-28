@@ -1,3 +1,5 @@
+"""Database models (Pydantic, for writes) and row types (TypedDict, for reads)."""
+
 import uuid
 from datetime import UTC, datetime
 from typing import Literal, TypedDict
@@ -8,15 +10,19 @@ MessageRole = Literal["user", "assistant", "tool"]
 
 
 def new_id() -> str:
+    """A new random id (UUID4)."""
     return str(uuid.uuid4())
 
 
 def now_iso() -> str:
+    """The current UTC time in ISO 8601, which sorts correctly as text."""
     # datetime.utcnow() is deprecated since Python 3.12.
     return datetime.now(UTC).isoformat()
 
 
 class Session(BaseModel):
+    """A conversation. Nothing sets `budget` (INR) or `context_summary` yet (SR-13, SR-14)."""
+
     id: str = Field(default_factory=new_id)
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
@@ -25,6 +31,8 @@ class Session(BaseModel):
 
 
 class Message(BaseModel):
+    """One user, assistant or tool message in a session."""
+
     id: str = Field(default_factory=new_id)
     session_id: str
     role: MessageRole
@@ -36,6 +44,8 @@ class Message(BaseModel):
 
 
 class CartItem(BaseModel):
+    """A product in a session's cart."""
+
     id: str = Field(default_factory=new_id)
     session_id: str
     product_name: str
@@ -47,6 +57,8 @@ class CartItem(BaseModel):
 
 
 class Preference(BaseModel):
+    """A lasting user preference; `value` is JSON-encoded."""
+
     id: str = Field(default_factory=new_id)
     key: str
     value: str  # JSON-encoded
@@ -58,6 +70,8 @@ class Preference(BaseModel):
 
 
 class MessageRow(TypedDict):
+    """A row of the messages table, as queries return it."""
+
     id: str
     session_id: str
     role: MessageRole
@@ -69,6 +83,8 @@ class MessageRow(TypedDict):
 
 
 class CartItemRow(TypedDict):
+    """A row of the cart_items table, as queries return it."""
+
     id: str
     session_id: str
     product_name: str

@@ -1,3 +1,5 @@
+"""The agent's response to the API layer."""
+
 from pydantic import BaseModel
 
 from app.llm.types import JSONObject

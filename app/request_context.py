@@ -41,6 +41,7 @@ logger = logging.getLogger("shopsense.http")
 
 
 def current_request_id() -> str | None:
+    """The id of the HTTP request being handled, or None outside a request."""
     return request_id_var.get()
 
 
@@ -48,6 +49,7 @@ class RequestIdFilter(logging.Filter):
     """Adds the current request id to every log record ("-" outside a request)."""
 
     def filter(self, record: logging.LogRecord) -> bool:
+        """Attach the request id; never drops a record."""
         record.request_id = request_id_var.get() or "-"
         return True
 
@@ -62,6 +64,7 @@ class JsonFormatter(logging.Formatter):
     `extra=` fields, and the exception traceback if there is one."""
 
     def format(self, record: logging.LogRecord) -> str:
+        """The record as one line of JSON."""
         entry: dict[str, object] = {
             "ts": datetime.fromtimestamp(record.created, UTC).isoformat(timespec="milliseconds"),
             "level": record.levelname,
@@ -116,6 +119,7 @@ class RequestContextMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Handle one request with its id set, then log it."""
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return

@@ -1,3 +1,5 @@
+"""The compare_products tool: a markdown comparison table (no external calls)."""
+
 from pydantic import BaseModel, Field
 
 from app.llm.types import JSONObject

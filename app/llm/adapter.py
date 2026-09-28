@@ -1,3 +1,6 @@
+"""LLM adapters: one interface over OpenAI Chat Completions, the OpenAI Responses API, Groq and Gemini,
+with one retry policy, provider-agnostic errors, and a Langfuse generation per call."""
+
 import asyncio
 from abc import ABC, abstractmethod
 from functools import lru_cache
@@ -645,30 +648,3 @@ def get_small_llm_adapter() -> LLMAdapter:
     if settings.llm_provider == "gemini":
         return GeminiAdapter(model=settings.llm_small_model, reasoning_effort=reasoning_effort)
     return ChatCompletionsAdapter(model=settings.llm_small_model, reasoning_effort=reasoning_effort)
-
-
-if __name__ == "__main__":
-    # Connection smoke test. From the project root:  python -m app.llm.adapter
-    import io
-    import sys
-
-    from app.tracing.langfuse_setup import shutdown_langfuse
-
-    # Windows consoles default to cp1252 and crash on the model's emoji.
-    if isinstance(sys.stdout, io.TextIOWrapper):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-
-    async def _smoke_test() -> None:
-        llm = get_llm_adapter()
-        response = await llm.chat([{"role": "user", "content": "Hello, what can you do?"}])
-        print(f"api:           {type(llm).__name__}")
-        print(f"model:         {response.model}")
-        print(f"finish_reason: {response.finish_reason}")
-        print(f"usage:         {response.usage}")
-        print(f"reasoning:     {(response.reasoning or '')[:200]!r}")
-        print(f"\n{response.content}")
-
-    try:
-        asyncio.run(_smoke_test())
-    finally:
-        shutdown_langfuse()  # send the generation before the script exits

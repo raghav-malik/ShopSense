@@ -1,3 +1,5 @@
+"""Typed settings from the environment and .env, with per-provider defaults, validated at startup."""
+
 from pathlib import Path
 from typing import Literal, Self
 
@@ -132,6 +134,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def apply_provider_defaults(self) -> Self:
+        """Fill per-provider defaults, then fail at startup on a missing key or an invalid combination."""
         base_url, model, reasoning_effort = PROVIDER_DEFAULTS[self.llm_provider]
         if self.llm_api == "responses":
             reasoning_effort = RESPONSES_DEFAULT_REASONING_EFFORT
@@ -156,6 +159,7 @@ class Settings(BaseSettings):
 
     @property
     def llm_api_key(self) -> SecretStr | None:
+        """The API key of the configured provider."""
         return {
             "openai": self.openai_api_key,
             "groq": self.groq_api_key,

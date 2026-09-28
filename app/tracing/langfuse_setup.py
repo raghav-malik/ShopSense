@@ -43,6 +43,7 @@ def _redact(text: str) -> str:
 
 
 def mask_otel_spans(*, params: MaskOtelSpansParams) -> MaskOtelSpansResult | None:
+    """Redact emails and API keys from every span before it leaves the process."""
     patches: dict[OtelSpanIdentifier, OtelSpanPatch] = {}
     for identifier, span in params.spans.items():
         replacements: dict[str, str] = {}

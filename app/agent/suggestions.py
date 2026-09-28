@@ -1,3 +1,5 @@
+"""Follow-up suggestions: 2-3 messages the user might send next, made after the answer is shown."""
+
 import re
 
 from langfuse import propagate_attributes

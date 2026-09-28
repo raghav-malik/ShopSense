@@ -441,34 +441,3 @@ async def _current_trace_url() -> str | None:
         return await asyncio.to_thread(langfuse.get_trace_url, trace_id=trace_id)
     except Exception:  # noqa: BLE001 - best-effort debug link; never fails the answer
         return None
-
-
-if __name__ == "__main__":
-    # Smoke test against a throwaway DB (your real shopsense.db is untouched).
-    # Sends a real trace to Langfuse. From the project root:  python -m app.agent.core
-    import io
-    import sys
-    import tempfile
-    from pathlib import Path
-
-    from app.db.database import close_db, init_db
-    from app.tracing.langfuse_setup import shutdown_langfuse
-
-    if isinstance(sys.stdout, io.TextIOWrapper):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-
-    async def _smoke_test() -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            settings.db_path = str(Path(tmp) / "agent_smoke.db")
-            await init_db()
-            try:
-                await queries.create_session("test-session-id")
-                result = await run_agent("test-session-id", "find me wireless earbuds under 3000")
-                print(result.model_dump_json(indent=2))
-            finally:
-                await close_db()
-
-    try:
-        asyncio.run(_smoke_test())
-    finally:
-        shutdown_langfuse()  # send the trace before the script exits

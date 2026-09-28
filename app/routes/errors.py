@@ -22,6 +22,8 @@ logger = logging.getLogger("shopsense.api")
 
 
 class ErrorBody(BaseModel):
+    """The body of every error response."""
+
     code: str
     message: str
     details: list[JSONObject] | None = None
@@ -59,6 +61,8 @@ def _body(code: str, message: str, details: list[JSONObject] | None = None, trac
 
 
 def register_error_handlers(app: FastAPI) -> None:
+    """Make HTTP and validation errors use the standard error shape."""
+
     @app.exception_handler(StarletteHTTPException)
     async def http_error(_: Request, exc: StarletteHTTPException) -> JSONResponse:
         # Starlette types `detail` as str; api_error() puts a dict there (FastAPI allows any JSON).

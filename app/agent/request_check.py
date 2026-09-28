@@ -83,6 +83,7 @@ class RequestCheck:
         self._answers: dict[ChangeKind, bool] = {}
 
     async def allows(self, kind: ChangeKind) -> bool:
+        """Whether the user's message asks for this kind of change (asked once per turn)."""
         if kind not in self._answers:
             self._answers[kind] = await self._ask(kind)
         return self._answers[kind]

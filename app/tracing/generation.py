@@ -28,6 +28,8 @@ logger = logging.getLogger("shopsense.tracing")
 
 
 class GenerationTrace:
+    """One Langfuse generation for one LLM call: opened before the call, completed after (see the module docstring)."""
+
     def __init__(
         self,
         name: str,
@@ -68,6 +70,7 @@ class GenerationTrace:
         self._update(build_update, "success")
 
     def error(self, exc: BaseException) -> None:
+        """Record the call's failure: level ERROR, with the provider's error body when there is one."""
         self._update(
             lambda: {
                 "output": _error_output(exc),

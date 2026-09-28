@@ -21,11 +21,15 @@ PROVIDER_ITEMS_KEY: Final = "_provider_items"
 
 
 class ChatToolCallFunction(TypedDict):
+    """The function part of a tool call in Chat Completions format."""
+
     name: str
     arguments: str  # JSON string
 
 
 class ChatToolCall(TypedDict):
+    """A tool call on an assistant message, in Chat Completions format."""
+
     id: str
     type: Literal["function"]
     function: ChatToolCallFunction
@@ -44,17 +48,23 @@ class ChatMessage(TypedDict):
 
 
 class ToolCallFunction(BaseModel):
+    """The function an LLM asked to call, with its arguments as a JSON string."""
+
     name: str
     arguments: str  # JSON string
 
 
 class ToolCall(BaseModel):
+    """A tool call from an LLM response."""
+
     id: str
     type: str = "function"
     function: ToolCallFunction
 
 
 class LLMResponse(BaseModel):
+    """One LLM response, in the same shape for every provider and API."""
+
     content: str | None = None
     reasoning: str | None = None  # model's thinking when returned (Groq gpt-oss; OpenAI Responses summaries)
     tool_calls: list[ToolCall] | None = None

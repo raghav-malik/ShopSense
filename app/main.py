@@ -1,3 +1,5 @@
+"""The FastAPI app: startup and shutdown, routes, error handling, request ids, and health probes."""
+
 import asyncio
 import logging
 from collections.abc import AsyncIterator
@@ -119,6 +121,7 @@ async def _database_answers() -> bool:
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
+    """Status, the configured models, and the Langfuse project link (read by the UI)."""
     # The frontend reads the model and dashboard link from here rather than
     # hardcoding them (the spec's UI said "Llama 3.3 70B" and linked the EU region).
     return {

@@ -1,3 +1,5 @@
+"""The manage_cart tool: add, remove, view or clear the session's cart."""
+
 from typing import Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
