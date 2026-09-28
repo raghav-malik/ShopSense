@@ -109,7 +109,6 @@ def test_chat_returns_agent_response(client: TestClient, session_id: str, monkey
             response="Try the boAt Airdopes 141.",
             tool_calls_made=["search_products"],
             products_found=[{"title": "boAt", "url": "https://x"}],
-            suggestions=["Compare"],
             step_count=2,
             total_tokens=1234,
         )
@@ -119,7 +118,7 @@ def test_chat_returns_agent_response(client: TestClient, session_id: str, monkey
     assert response.status_code == 200
     body = response.json()
     assert body["response"] == "Try the boAt Airdopes 141."
-    assert body["products_found"] and body["suggestions"] == ["Compare"]
+    assert body["products_found"] and "suggestions" not in body  # fetched separately, after the answer
     # The route picks the Langfuse trace id up front so failures can link to it.
     ((sid, message, kwargs),) = calls
     assert sid == session_id and message == "earbuds" and len(kwargs["langfuse_trace_id"]) == 32
@@ -157,6 +156,31 @@ def test_chat_errors_are_structured_with_trace_url(
 
 
 # ---- cart & history ----
+
+
+# ---- suggestions (fetched after the answer) ----
+
+
+def test_suggestions_for_the_saved_conversation(
+    client: TestClient, session_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[tuple[str, list[Any]]] = []
+
+    async def fake_suggest(sid: str, history: list[Any]) -> list[str]:
+        seen.append((sid, history))
+        return ["Compare these two", "Show cheaper options"]
+
+    monkeypatch.setattr(chat_routes, "suggest_follow_ups", fake_suggest)
+    response = client.post(f"/sessions/{session_id}/suggestions")
+    assert response.status_code == 200
+    assert response.json() == {"suggestions": ["Compare these two", "Show cheaper options"]}
+    assert seen == [(session_id, [])]  # a new session has no messages yet
+
+
+def test_suggestions_nonexistent_session(client: TestClient) -> None:
+    response = client.post("/sessions/nonexistent/suggestions")
+    assert response.status_code == 404
+    assert error_of(response)["code"] == "session_not_found"
 
 
 def test_cart_empty(client: TestClient, session_id: str) -> None:

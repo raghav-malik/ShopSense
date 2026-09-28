@@ -11,6 +11,7 @@ from typing import override
 import pytest
 
 import app.agent.core as core
+from app.agent.suggestions import suggest_follow_ups
 from app.config import settings
 from app.db import queries
 from app.db.models import Session
@@ -125,9 +126,8 @@ async def test_tool_call_then_answer(session: Session) -> None:
     assert result.response == "The boAt Airdopes 141 at ₹1,099 is my pick."
     assert result.tool_calls_made == ["search_products"]
     assert result.step_count == 2
-    assert result.total_tokens == 150 + 200  # agent calls only, not suggestions
+    assert result.total_tokens == 150 + 200
     assert [p["url"] for p in result.products_found] == [h["href"] for h in SEARCH_HITS]
-    assert result.suggestions == ["Compare these two", "Show cheaper options"]  # list markers stripped
 
     # Second LLM call sees the assistant's tool call and the matching tool result.
     second = llm.agent_calls[1]["messages"]
@@ -234,7 +234,6 @@ async def test_max_steps_forces_a_final_answer(session: Session, monkeypatch: py
     final = llm.agent_calls[-1]
     assert final["name"] == "answer-at-step-limit" and final["tool_choice"] == "none"
     assert final["messages"][-1]["role"] == "system" and "research limit" in final["messages"][-1]["content"]
-    assert result.suggestions  # still generated on this path
 
 
 async def test_max_steps_falls_back_to_results_if_final_call_fails(
@@ -312,13 +311,10 @@ async def test_provider_items_are_carried_to_the_next_call(session: Session) -> 
     assert assistant[PROVIDER_ITEMS_KEY] == items
 
 
-async def test_suggestions_use_the_small_model(session: Session) -> None:
-    agent_llm = FakeLLM(answer("The boAt Airdopes 141 is my pick."))
-    small_llm = FakeLLM()
-    result = await core.run_agent(session.id, "find earbuds", llm=agent_llm, small_llm=small_llm)
-    assert [c["name"] for c in agent_llm.calls] == ["generate-agent-response"]
-    assert [c["name"] for c in small_llm.calls] == ["generate-suggestions"]
-    assert result.suggestions == ["Compare these two", "Show cheaper options"]
+async def test_the_answer_does_not_wait_for_suggestions(session: Session) -> None:
+    llm = FakeLLM(answer("The boAt Airdopes 141 is my pick."))
+    await core.run_agent(session.id, "find earbuds", llm=llm, small_llm=llm)
+    assert [c["name"] for c in llm.calls] == ["generate-agent-response"]  # no suggestion call in the turn
 
 
 # ---- tool execution: web tools concurrently, session tools in order ----
@@ -364,11 +360,28 @@ async def test_session_tools_run_in_the_order_requested(session: Session) -> Non
     assert "Noise Buds VS104" in json.dumps(tool_msgs["call_view"])  # the view saw the add
 
 
-async def test_suggestions_see_the_final_answer(session: Session) -> None:
-    llm = FakeLLM(answer("The boAt Airdopes 141 is my pick."))
+async def test_suggestions_follow_up_on_the_saved_answer(session: Session) -> None:
+    llm = FakeLLM(tool_calls(search_call()), answer("The boAt Airdopes 141 is my pick."))
     await core.run_agent(session.id, "find earbuds", llm=llm, small_llm=llm)
-    suggestion_call = next(c for c in llm.calls if c["name"] == "generate-suggestions")
-    assert "The boAt Airdopes 141 is my pick." in suggestion_call["messages"][-1]["content"]  # SR-41
+
+    small_llm = FakeLLM()
+    suggestions = await suggest_follow_ups(session.id, await queries.get_messages(session.id), small_llm)
+
+    assert suggestions == ["Compare these two", "Show cheaper options"]  # list markers stripped
+    (call_,) = small_llm.calls
+    prompt = call_["messages"][-1]["content"]
+    assert "The boAt Airdopes 141 is my pick." in prompt  # SR-41: the answer they follow up on
+    assert "result_count" not in prompt  # tool rows aren't part of the conversation
+
+
+async def test_suggestions_are_best_effort(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    llm = FakeLLM()
+
+    async def provider_down(*args: object, **kwargs: object) -> LLMResponse:
+        raise LLMError("provider down")
+
+    monkeypatch.setattr(llm, "chat", provider_down)
+    assert await suggest_follow_ups(session.id, await queries.get_messages(session.id), llm) == []
 
 
 # ---- request check: cart and preference changes need the user's say-so ----
