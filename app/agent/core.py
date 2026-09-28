@@ -106,7 +106,10 @@ async def _run_agent(session_id: str, user_message: str) -> AgentResponse:
         step_count = step + 1
 
         # LLM call — traced as a generation inside the adapter
-        response = await llm.chat(messages, tools_schema, name="generate-agent-response")
+        response = await llm.chat(
+            messages, tools_schema, name="generate-agent-response",
+            trace_metadata={"step": step_count, "operation": "agent_step"},
+        )
         total_tokens += response.usage.get("total_tokens", 0)
 
         # Check if the LLM wants to respond (no tool calls)
@@ -152,7 +155,8 @@ async def _run_agent(session_id: str, user_message: str) -> AgentResponse:
             tools_called.append(tool_name)
 
             # Execute the tool
-            result = await _execute_tool_traced(tool_name, tc.function.arguments, session_id, step)
+            # Same step number as the generation that requested it.
+            result = await _execute_tool_traced(tool_name, tc.function.arguments, session_id, step_count)
 
             # Track products found
             if tool_name == "search_products":
@@ -209,6 +213,7 @@ async def _answer_from_research(llm, messages: list[dict], tools_schema: list[di
             [*messages, {"role": "system", "content": STEP_LIMIT_NOTE}],
             # Tools stay in the request (the history references them) but can't be called.
             tools_schema, tool_choice="none", name="answer-at-step-limit",
+            trace_metadata={"step": settings.max_agent_steps + 1, "operation": "final_answer_at_limit"},
         )
         if response.content:
             return response.content, response.usage.get("total_tokens", 0)

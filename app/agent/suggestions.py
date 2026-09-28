@@ -36,7 +36,9 @@ async def generate_suggestions(conversation_messages: list[dict]) -> list[str]:
             {"role": "user", "content": _format_conversation_for_suggestions(conversation_messages)},
         ]
 
-        response = await llm.chat(messages, name="generate-suggestions")  # No tools needed
+        response = await llm.chat(  # No tools needed
+            messages, name="generate-suggestions", trace_metadata={"operation": "suggestions"},
+        )
         if not response.content:
             return []
 

@@ -8,9 +8,7 @@ from openai import AsyncOpenAI, RateLimitError
 from app.config import settings
 from app.llm.errors import LLMError, LLMRateLimitError, LLMTimeoutError, LLMUnavailableError
 from app.llm.types import LLMResponse, ToolCall, ToolCallFunction
-from app.tracing.langfuse_setup import get_langfuse
-
-langfuse = get_langfuse()
+from app.tracing.generation import GenerationTrace
 
 # A per-minute limit (e.g. Groq free tier: 8K tokens/min) can ask for up to ~60s,
 # but daily token limits can ask for many minutes. Past this cap we fail fast
@@ -32,12 +30,14 @@ class LLMAdapter(ABC):
         *,
         name: str = "generate-response",
         tool_choice: str = "auto",
+        trace_metadata: dict | None = None,
     ) -> LLMResponse:
         """Send messages to the LLM and get a response.
 
         `name` labels the call's Langfuse generation. Keep it stable: evaluators
         and dashboards filter on it. `tool_choice="none"` forces a text answer
-        even when tools are offered.
+        even when tools are offered. `trace_metadata` (e.g. {"step": 3,
+        "operation": "agent_step"}) is attached to the generation.
 
         Raises the provider-agnostic errors in app.llm.errors.
         """
@@ -69,6 +69,7 @@ class OpenAICompatibleAdapter(LLMAdapter):
         *,
         name: str = "generate-response",
         tool_choice: str = "auto",
+        trace_metadata: dict | None = None,
     ) -> LLMResponse:
         kwargs = {
             "model": self.model,
@@ -94,7 +95,7 @@ class OpenAICompatibleAdapter(LLMAdapter):
         for attempt in range(max_retries + 1):
             last_attempt = attempt == max_retries
             try:
-                response = await self._traced_completion(kwargs, name=name, attempt=attempt + 1)
+                response = await self._traced_completion(kwargs, name=name, attempt=attempt + 1, trace_metadata=trace_metadata or {})
                 break
             except RateLimitError as e:
                 wait = _retry_after_seconds(e)
@@ -153,43 +154,36 @@ class OpenAICompatibleAdapter(LLMAdapter):
             model=response.model,
         )
 
-    async def _traced_completion(self, kwargs: dict, *, name: str, attempt: int):
-        """One API call = one Langfuse generation.
-
-        Usage and cost are recorded in `finally` so every attempt is logged,
-        including one that fails (e.g. a 429 before the retry).
-        Pattern from Airtap's omniGenerate() finally block.
-        """
-        with langfuse.start_as_current_observation(
-            as_type="generation",
-            name=name,
+    async def _traced_completion(self, kwargs: dict, *, name: str, attempt: int, trace_metadata: dict):
+        """One API call = one Langfuse generation, opened before the call and
+        completed after it succeeds or fails (every attempt, including a 429
+        before the retry, is its own generation). Pattern from Airtap's omniTracing."""
+        with GenerationTrace(
+            name,
             model=kwargs["model"],
             input=_generation_input(kwargs),
             model_parameters=_model_parameters(kwargs),
-            metadata={"attempt": attempt, "provider": settings.llm_provider},
-        ) as generation:
-            response = None
+            metadata={**trace_metadata, "attempt": attempt, "provider": settings.llm_provider, "api": "chat_completions"},
+        ) as trace:
             try:
                 response = await self.client.chat.completions.create(**kwargs)
-                return response
             except Exception as e:
-                generation.update(level="ERROR", status_message=f"{type(e).__name__}: {e}")
+                trace.error(e)
                 raise
-            finally:
-                if response is not None:
-                    choice = response.choices[0]
-                    # Langfuse prices these buckets with its model definition for
-                    # response.model (built in for OpenAI models; added manually
-                    # for openai/gpt-oss-120b), which is where the cost comes from.
-                    generation.update(
-                        model=response.model,
-                        output=_generation_output(choice.message),
-                        usage_details=_usage_details(response.usage),
-                        # Langfuse picks the price tier (standard/flex/priority)
-                        # from service_tier, and only the response says which ran.
-                        model_parameters=_model_parameters(kwargs, getattr(response, "service_tier", None)),
-                        metadata={"attempt": attempt, "provider": settings.llm_provider, "finish_reason": choice.finish_reason},
-                    )
+            choice = response.choices[0]
+            # Langfuse prices these buckets with its model definition for
+            # response.model (built in for OpenAI models; added manually for
+            # openai/gpt-oss-120b), which is where the cost comes from.
+            trace.success(lambda: {
+                "model": response.model,
+                "output": _generation_output(choice.message),
+                "usage_details": _usage_details(response.usage),
+                # Langfuse picks the price tier (standard/flex/priority) from
+                # service_tier, and only the response says which ran.
+                "model_parameters": _model_parameters(kwargs, getattr(response, "service_tier", None)),
+                "metadata": {"finish_reason": choice.finish_reason},
+            })
+            return response
 
 
 def _model_parameters(kwargs: dict, service_tier: str | None = None) -> dict:
