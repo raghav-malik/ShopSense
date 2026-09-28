@@ -29,6 +29,7 @@ from app.config import settings
 from app.db import queries
 from app.db.models import Message
 from app.llm.adapter import get_llm_adapter
+from app.llm.errors import LLMError
 from app.tools.registry import TOOL_MAP, execute_tool, get_tool_schemas
 
 langfuse = get_langfuse()
@@ -175,16 +176,58 @@ async def _run_agent(session_id: str, user_message: str) -> AgentResponse:
                 tool_name=tool_name, tool_call_id=tc.id,
             ))
 
-    # Guardrail: max steps reached
-    fallback = "I've done extensive research but need more direction. Could you narrow down what you're looking for?"
+    # Guardrail: max steps reached. Rather than discarding the research, make one
+    # last call with tools disabled so the model answers from what it gathered.
     langfuse.update_current_span(level="WARNING", status_message=f"max_agent_steps ({settings.max_agent_steps}) reached")
+    final_text, final_tokens = await _answer_from_research(llm, messages, tools_schema, products_found)
+    total_tokens += final_tokens
     await queries.save_message(Message(
-        session_id=session_id, role="assistant", content=fallback,
+        session_id=session_id, role="assistant", content=final_text,
     ))
+    messages.append({"role": "assistant", "content": final_text})
     return AgentResponse(
-        response=fallback, tool_calls_made=tools_called,
-        products_found=products_found, trace_url=await _current_trace_url(),
+        response=final_text, tool_calls_made=tools_called,
+        products_found=products_found, suggestions=await generate_suggestions(messages),
+        trace_url=await _current_trace_url(),
         step_count=step_count, total_tokens=total_tokens,
+    )
+
+
+STEP_LIMIT_NOTE = (
+    "You've reached the research limit for this turn and can't call more tools. "
+    "Answer now using only what the tool results above already show: recommend "
+    "the best options you found (with prices and links where you have them), and "
+    "say briefly what you couldn't confirm."
+)
+
+
+async def _answer_from_research(llm, messages: list[dict], tools_schema: list[dict], products_found: list[dict]) -> tuple[str, int]:
+    """Final answer after hitting max_agent_steps. Falls back to listing the
+    search results if even this call fails, so the user always gets something."""
+    try:
+        response = await llm.chat(
+            [*messages, {"role": "system", "content": STEP_LIMIT_NOTE}],
+            # Tools stay in the request (the history references them) but can't be called.
+            tools_schema, tool_choice="none", name="answer-at-step-limit",
+        )
+        if response.content:
+            return response.content, response.usage.get("total_tokens", 0)
+    except LLMError:
+        pass
+    return _results_fallback(products_found), 0
+
+
+def _results_fallback(products_found: list[dict]) -> str:
+    lines = [
+        f"- [{p.get('title') or p['url']}]({p['url']})"
+        for p in products_found[:5] if p.get("url")
+    ]
+    if not lines:
+        return "I couldn't finish researching this one. Could you tell me more about what you're looking for, such as a budget, brand, or must-have feature?"
+    return (
+        "I ran out of research steps before I could make a confident recommendation. "
+        "Here are the most relevant results I found:\n\n" + "\n".join(lines)
+        + "\n\nTell me which one interests you, or narrow it down (budget, brand, features) and I'll dig deeper."
     )
 
 

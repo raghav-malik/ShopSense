@@ -1,6 +1,7 @@
+import asyncio
 import logging
+import math
 
-import openai
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
@@ -8,9 +9,20 @@ from app.agent.core import run_agent
 from app.agent.schemas import AgentResponse
 from app.db import queries
 from app.db.models import Session
+from app.llm.errors import LLMError, LLMRateLimitError, LLMTimeoutError, LLMUnavailableError
 from app.routes.errors import ErrorResponse, api_error
+from app.tracing.langfuse_setup import get_langfuse
 
 logger = logging.getLogger("shopsense.api")
+
+# (status, user-facing message) per LLM failure. The technical reason goes to
+# the server log and the Langfuse trace, not to the user.
+LLM_ERRORS: list[tuple[type[LLMError], int, str]] = [
+    (LLMRateLimitError, 503, "The assistant is busy right now. Please try again in a minute."),
+    (LLMTimeoutError, 504, "The assistant took too long to respond. Please try again."),
+    (LLMUnavailableError, 502, "The assistant's language model is unavailable right now. Please try again later."),
+    (LLMError, 502, "The assistant couldn't process that request. Try rephrasing it."),
+]
 
 router = APIRouter(
     prefix="/sessions/{session_id}",
@@ -35,8 +47,10 @@ async def _require_session(session_id: str) -> Session:
     response_model=AgentResponse,
     responses={
         400: {"model": ErrorResponse, "description": "Empty message"},
-        502: {"model": ErrorResponse, "description": "The LLM provider returned an error"},
-        503: {"model": ErrorResponse, "description": "The LLM provider is rate limiting us"},
+        500: {"model": ErrorResponse, "description": "Unexpected server error (with trace_url)"},
+        502: {"model": ErrorResponse, "description": "The LLM is unavailable or rejected the request"},
+        503: {"model": ErrorResponse, "description": "The LLM provider is rate limiting us (Retry-After header)"},
+        504: {"model": ErrorResponse, "description": "The LLM didn't respond in time"},
     },
 )
 async def chat(session_id: str, request: ChatRequest):
@@ -46,16 +60,30 @@ async def chat(session_id: str, request: ChatRequest):
     if not request.message.strip():
         raise api_error(400, "empty_message", "Message cannot be empty")
 
-    # The failure itself is already on the Langfuse trace (level ERROR); log it
-    # here for the server, and give the client a stable code, not internals.
+    # Choose the trace id up front: if the agent fails, its trace (level ERROR,
+    # with the failing call) still exists, and the error response links to it.
+    langfuse = get_langfuse()
+    trace_id = langfuse.create_trace_id()
+
     try:
-        return await run_agent(session_id, request.message)
-    except openai.RateLimitError:
-        logger.warning("LLM rate limited for session %s", session_id)
-        raise api_error(503, "llm_rate_limited", "The assistant is busy right now. Please try again in a minute.")
-    except openai.APIError:
-        logger.exception("LLM provider error for session %s", session_id)
-        raise api_error(502, "llm_error", "The assistant couldn't reach its language model. Please try again.")
+        return await run_agent(session_id, request.message, langfuse_trace_id=trace_id)
+    except LLMError as e:
+        status, message = next((s, m) for cls, s, m in LLM_ERRORS if isinstance(e, cls))
+        logger.warning("Agent LLM failure (%s) for session %s: %s", e.code, session_id, e)
+        headers = {"Retry-After": str(math.ceil(e.retry_after))} if e.retry_after else None
+        raise api_error(status, e.code, message, trace_url=await _trace_url(trace_id), headers=headers)
+    except Exception:
+        logger.exception("Agent failed for session %s", session_id)
+        raise api_error(500, "agent_error", "Something went wrong while answering. Please try again.",
+                        trace_url=await _trace_url(trace_id))
+
+
+async def _trace_url(trace_id: str) -> str | None:
+    # get_trace_url looks up the project id over HTTP the first time; keep it off the event loop.
+    try:
+        return await asyncio.to_thread(get_langfuse().get_trace_url, trace_id=trace_id)
+    except Exception:
+        return None
 
 
 class CartItemOut(BaseModel):

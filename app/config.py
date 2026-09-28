@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     llm_reasoning_effort: str | None = Field(default=None, description="reasoning_effort sent to the model; defaults per provider")
     llm_max_tokens: int = Field(default=4096, description="Max tokens per LLM response (sent as max_completion_tokens)")
     llm_temperature: float = Field(default=0.3, description="Lower = more deterministic tool selection")
+    llm_timeout: float = Field(default=60.0, description="Seconds to wait for one LLM response before retrying once")
 
     # Langfuse
     langfuse_public_key: str = Field(..., description="Langfuse public key")

@@ -2,9 +2,11 @@ import asyncio
 from abc import ABC, abstractmethod
 from functools import lru_cache
 
+import openai
 from openai import AsyncOpenAI, RateLimitError
 
 from app.config import settings
+from app.llm.errors import LLMError, LLMRateLimitError, LLMTimeoutError, LLMUnavailableError
 from app.llm.types import LLMResponse, ToolCall, ToolCallFunction
 from app.tracing.langfuse_setup import get_langfuse
 
@@ -15,6 +17,8 @@ langfuse = get_langfuse()
 # rather than hang the request.
 MAX_RETRY_WAIT_SECONDS = 60.0
 DEFAULT_RETRY_WAIT_SECONDS = 5.0
+# Transient failures (timeouts, dropped connections, provider 5xx) get one quick retry.
+TRANSIENT_RETRY_WAIT_SECONDS = 2.0
 
 
 class LLMAdapter(ABC):
@@ -27,11 +31,15 @@ class LLMAdapter(ABC):
         tools: list[dict] | None = None,
         *,
         name: str = "generate-response",
+        tool_choice: str = "auto",
     ) -> LLMResponse:
         """Send messages to the LLM and get a response.
 
         `name` labels the call's Langfuse generation. Keep it stable: evaluators
-        and dashboards filter on it.
+        and dashboards filter on it. `tool_choice="none"` forces a text answer
+        even when tools are offered.
+
+        Raises the provider-agnostic errors in app.llm.errors.
         """
         ...
 
@@ -47,6 +55,9 @@ class OpenAICompatibleAdapter(LLMAdapter):
             # The SDK retries 429s twice on its own by default; disable that so
             # the retry-once policy below is the only one.
             max_retries=0,
+            # The SDK's default read timeout is 600s; with no SDK retries, one
+            # hung call would hold the request for 10 minutes.
+            timeout=settings.llm_timeout,
         )
         self.model = settings.llm_model
         self.reasoning_effort = settings.llm_reasoning_effort
@@ -57,6 +68,7 @@ class OpenAICompatibleAdapter(LLMAdapter):
         tools: list[dict] | None = None,
         *,
         name: str = "generate-response",
+        tool_choice: str = "auto",
     ) -> LLMResponse:
         kwargs = {
             "model": self.model,
@@ -72,20 +84,42 @@ class OpenAICompatibleAdapter(LLMAdapter):
             kwargs["temperature"] = settings.llm_temperature
         if tools:
             kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
+            kwargs["tool_choice"] = tool_choice
 
-        # Retry once on 429 (rate limit)
+        # Retry once on transient failures; fail fast with a clear, provider-
+        # agnostic error on ones retrying can't fix.
         # Pattern from Airtap's omniNormalizeProviderError
+        provider = f"{settings.llm_provider} model {self.model!r}"
         max_retries = 1
         for attempt in range(max_retries + 1):
+            last_attempt = attempt == max_retries
             try:
                 response = await self._traced_completion(kwargs, name=name, attempt=attempt + 1)
                 break
             except RateLimitError as e:
                 wait = _retry_after_seconds(e)
-                if attempt == max_retries or wait > MAX_RETRY_WAIT_SECONDS:
-                    raise
-                await asyncio.sleep(wait)
+                if last_attempt or wait > MAX_RETRY_WAIT_SECONDS:
+                    raise LLMRateLimitError(f"Rate limited by {provider}; retry after ~{wait:.0f}s", retry_after=wait) from e
+            except openai.APITimeoutError as e:  # subclass of APIConnectionError: check first
+                if last_attempt:
+                    raise LLMTimeoutError(f"{provider} didn't respond within {settings.llm_timeout:g}s") from e
+                wait = TRANSIENT_RETRY_WAIT_SECONDS
+            except openai.APIConnectionError as e:
+                if last_attempt:
+                    raise LLMUnavailableError(f"Couldn't connect to {settings.llm_base_url}") from e
+                wait = TRANSIENT_RETRY_WAIT_SECONDS
+            except openai.InternalServerError as e:  # 5xx, incl. 503 "overloaded"
+                if last_attempt:
+                    raise LLMUnavailableError(f"{provider} is unavailable (HTTP {e.status_code})") from e
+                wait = TRANSIENT_RETRY_WAIT_SECONDS
+            except openai.NotFoundError as e:
+                # e.g. Groq retiring llama-3.3-70b-versatile: a config problem, not transient.
+                raise LLMUnavailableError(f"{provider} doesn't exist or this key can't use it; check LLM_MODEL") from e
+            except (openai.AuthenticationError, openai.PermissionDeniedError) as e:
+                raise LLMUnavailableError(f"{settings.llm_provider} rejected the API key (HTTP {e.status_code}); check {settings.llm_provider.upper()}_API_KEY") from e
+            except openai.APIStatusError as e:  # 400/413/422...: the request itself was rejected
+                raise LLMError(f"{provider} rejected the request (HTTP {e.status_code}): {e.message}") from e
+            await asyncio.sleep(wait)
 
         choice = response.choices[0]
 

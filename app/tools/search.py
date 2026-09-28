@@ -2,6 +2,7 @@ import asyncio
 from urllib.parse import urlparse
 
 from ddgs import DDGS
+from ddgs.exceptions import DDGSException, RatelimitException, TimeoutException
 from pydantic import BaseModel, Field
 
 from app.config import settings
@@ -50,15 +51,19 @@ async def search_products(query: str, max_results: int = settings.max_search_res
 
     ddgs is synchronous; it runs in a worker thread so a slow search doesn't
     block the event loop (and every other request) while it waits.
+
+    Never raises: failures come back as {"error", "error_type", "hint", "results": []}.
     """
+    no_results = {
+        "results": [],
+        "result_count": 0,
+        "message": f"No products found for '{query}'. Try broadening the search or using different keywords.",
+    }
     try:
         results = await asyncio.to_thread(_ddgs_text, query, max_results)
 
         if not results:
-            return {
-                "results": [],
-                "message": f"No products found for '{query}'. Try broadening the search or using different keywords.",
-            }
+            return no_results
 
         formatted = []
         for r in results:
@@ -76,8 +81,21 @@ async def search_products(query: str, max_results: int = settings.max_search_res
             "query_used": query,
         }
 
+    except RatelimitException:
+        return {"error": "The search engines are rate limiting us", "error_type": "rate_limited", "results": [],
+                "hint": "Wait before searching again; answer from results you already have if you can."}
+    except TimeoutException:
+        return {"error": "The search timed out", "error_type": "timeout", "results": [],
+                "hint": "Retry once with a shorter, simpler query."}
+    except DDGSException as e:
+        # ddgs raises (rather than returning []) when no engine finds anything.
+        if "no results" in str(e).lower():
+            return no_results
+        return {"error": f"Search failed: {e}", "error_type": "search_error", "results": [],
+                "hint": "Retry once with a different query."}
     except Exception as e:
-        return {"error": f"Search failed: {str(e)}", "results": []}
+        return {"error": f"Search failed: {type(e).__name__}", "error_type": "search_error", "results": [],
+                "hint": "Retry once with a different query."}
 
 
 def _truncate(text: str, limit: int) -> str:

@@ -38,22 +38,73 @@ EXTRACT_SCHEMA = pydantic_to_tool_schema(
 )
 
 
+FETCH_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
+MAX_REDIRECTS = 5
+MAX_PAGE_BYTES = 3_000_000  # product pages are well under this; stops a huge download
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+# Hints are for the LLM: what to do next instead of retrying blindly (in traces,
+# the agent kept retrying blocked retailers until it hit the rate limit).
+_USE_SNIPPET = "Don't retry this site; use the price and link from the search results instead."
+
+
+class FetchError(Exception):
+    def __init__(self, kind: str, message: str, hint: str):
+        super().__init__(message)
+        self.kind, self.message, self.hint = kind, message, hint
+
+
+async def _fetch_html(url: str) -> str:
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=FETCH_TIMEOUT, max_redirects=MAX_REDIRECTS) as client:
+            async with client.stream("GET", url, headers=HEADERS) as response:
+                status = response.status_code
+                if status in (401, 403, 429, 503):
+                    raise FetchError("blocked", f"HTTP {status}: the site refused automated access", _USE_SNIPPET)
+                if status in (404, 410):
+                    raise FetchError("not_found", f"HTTP {status}: the page doesn't exist", "The URL may be wrong or outdated; don't guess variations of it.")
+                if status >= 400:
+                    raise FetchError("http_error", f"HTTP {status} fetching the page", _USE_SNIPPET)
+                content_type = response.headers.get("content-type", "")
+                if content_type and "html" not in content_type:
+                    raise FetchError("not_html", f"Not a web page (content-type {content_type.split(';')[0]})", "Use a product page URL, not an image, PDF or file.")
+
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    body.extend(chunk)
+                    if len(body) >= MAX_PAGE_BYTES:
+                        break  # product metadata sits in <head>; the first 3MB is plenty
+                return body.decode(response.encoding or "utf-8", errors="replace")
+    except httpx.TimeoutException as e:
+        # Connect (5s) and read (10s) timeouts differ; say which one hit.
+        phase = "connect" if isinstance(e, httpx.ConnectTimeout) else "respond"
+        raise FetchError("timeout", f"The site didn't {phase} in time", _USE_SNIPPET)
+    except httpx.ConnectError:
+        raise FetchError("connection_failed", "Couldn't connect (unknown host, refused, or TLS error)", "Check the URL came from the search results; don't invent URLs.")
+    except httpx.TooManyRedirects:
+        raise FetchError("too_many_redirects", f"More than {MAX_REDIRECTS} redirects", _USE_SNIPPET)
+    except (httpx.InvalidURL, httpx.UnsupportedProtocol):
+        raise FetchError("invalid_url", "The URL isn't a valid http(s) address", "Use a URL exactly as it appeared in the search results.")
+    except httpx.RequestError as e:
+        raise FetchError("network_error", f"Network error: {type(e).__name__}", _USE_SNIPPET)
+
+
 async def extract_product_info(url: str) -> dict:
     """
     Fetch a product URL and extract structured information.
     Uses Open Graph tags, JSON-LD, and meta tag fallbacks.
     Does NOT execute JavaScript — this is a best-effort extraction.
+
+    Never raises: failures come back as {"error", "error_type", "hint"} so the
+    agent can decide what to do next.
     """
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
+    try:
+        html = await _fetch_html(url)
+    except FetchError as e:
+        return {"error": e.message, "error_type": e.kind, "hint": e.hint, "buy_link": url, "available": False}
 
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-
-        soup = BeautifulSoup(response.text, "html.parser")
+        soup = BeautifulSoup(html, "html.parser")
 
         # 1. Try JSON-LD structured data
         product_data = _extract_json_ld(soup)
@@ -83,12 +134,9 @@ async def extract_product_info(url: str) -> dict:
             "source": _get_domain(url),
         }
 
-    except httpx.HTTPStatusError as e:
-        return {"error": f"HTTP {e.response.status_code} fetching {url}", "buy_link": url, "available": False}
-    except httpx.TimeoutException:
-        return {"error": f"Timeout fetching {url}", "buy_link": url, "available": False}
-    except Exception as e:
-        return {"error": f"Extraction failed: {str(e)}", "buy_link": url, "available": False}
+    except Exception as e:  # malformed HTML/JSON-LD we didn't anticipate
+        return {"error": f"Couldn't read product details: {type(e).__name__}", "error_type": "parse_error",
+                "hint": _USE_SNIPPET, "buy_link": url, "available": False}
 
 
 def _extract_json_ld(soup: BeautifulSoup) -> dict:

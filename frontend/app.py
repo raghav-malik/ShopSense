@@ -20,9 +20,10 @@ st.set_page_config(page_title="ShopSense", page_icon="🛍️", layout="wide")
 # ---- Backend calls ----
 
 class ApiError(Exception):
-    def __init__(self, message: str, code: str | None = None):
+    def __init__(self, message: str, code: str | None = None, trace_url: str | None = None):
         super().__init__(message)
         self.code = code
+        self.trace_url = trace_url
 
 
 def _call(method: str, path: str, *, timeout: float = 15.0, **kwargs) -> dict:
@@ -33,10 +34,11 @@ def _call(method: str, path: str, *, timeout: float = 15.0, **kwargs) -> dict:
     except httpx.TimeoutException:
         raise ApiError("The assistant took too long to respond. Please try again.", "timeout")
     if response.is_error:
-        # The backend always answers {"error": {"code", "message"}}.
+        # The backend always answers {"error": {"code", "message"}}, plus
+        # trace_url when an agent run failed.
         try:
             error = response.json()["error"]
-            raise ApiError(error["message"], error["code"])
+            raise ApiError(error["message"], error["code"], error.get("trace_url"))
         except (ValueError, KeyError, TypeError):
             raise ApiError(f"API error {response.status_code}", f"http_{response.status_code}")
     return response.json()
@@ -163,6 +165,8 @@ def render_message(message: dict, index: int) -> None:
     with st.chat_message(message["role"]):
         if message.get("error"):
             st.error(message["content"])
+            if message.get("trace_url"):
+                st.caption(f"[Debug this in Langfuse]({message['trace_url']})")
         else:
             st.markdown(message["content"])
         if message["role"] == "assistant":
@@ -244,7 +248,7 @@ if prompt:
                 result = send_message(session_id, prompt)
             except ApiError as e:
                 result = None
-                st.session_state.messages.append({"role": "assistant", "content": str(e), "error": True})
+                st.session_state.messages.append({"role": "assistant", "content": str(e), "error": True, "trace_url": e.trace_url})
 
     if result is not None:
         products, cited = pick_product_cards(result)

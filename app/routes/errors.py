@@ -3,7 +3,8 @@
     {"error": {"code": "session_not_found", "message": "Session abc not found"}}
 
 `code` is stable and machine-readable (the frontend can branch on it);
-`message` is for humans. Validation errors add `details`.
+`message` is for humans. Validation errors add `details`; errors from an agent
+run add `trace_url`, the Langfuse trace of the failed turn.
 """
 
 import logging
@@ -21,6 +22,7 @@ class ErrorBody(BaseModel):
     code: str
     message: str
     details: list[dict] | None = None
+    trace_url: str | None = None
 
 
 class ErrorResponse(BaseModel):
@@ -28,15 +30,27 @@ class ErrorResponse(BaseModel):
     error: ErrorBody
 
 
-def api_error(status_code: int, code: str, message: str) -> HTTPException:
+def api_error(
+    status_code: int,
+    code: str,
+    message: str,
+    *,
+    trace_url: str | None = None,
+    headers: dict[str, str] | None = None,
+) -> HTTPException:
     """Raise with: `raise api_error(404, "session_not_found", "...")`."""
-    return HTTPException(status_code=status_code, detail={"code": code, "message": message})
+    detail = {"code": code, "message": message}
+    if trace_url:
+        detail["trace_url"] = trace_url
+    return HTTPException(status_code=status_code, detail=detail, headers=headers)
 
 
-def _body(code: str, message: str, details: list[dict] | None = None) -> dict:
+def _body(code: str, message: str, details: list[dict] | None = None, trace_url: str | None = None) -> dict:
     error = {"code": code, "message": message}
     if details is not None:
         error["details"] = details
+    if trace_url:
+        error["trace_url"] = trace_url
     return {"error": error}
 
 
@@ -44,7 +58,7 @@ def register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(StarletteHTTPException)
     async def http_error(_: Request, exc: StarletteHTTPException) -> JSONResponse:
         if isinstance(exc.detail, dict) and {"code", "message"} <= exc.detail.keys():
-            body = _body(exc.detail["code"], exc.detail["message"])
+            body = _body(exc.detail["code"], exc.detail["message"], trace_url=exc.detail.get("trace_url"))
         else:
             # Framework-raised errors (404 unknown route, 405 wrong method, ...)
             body = _body(f"http_{exc.status_code}", str(exc.detail))
