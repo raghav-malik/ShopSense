@@ -5,6 +5,7 @@ SQLite, isolated per test. The fake is passed in with run_agent(..., llm=...).""
 
 import copy
 import json
+import time
 from typing import override
 
 import pytest
@@ -110,7 +111,7 @@ def search_call(call_id: str = "call_1", query: str = "wireless earbuds under 30
 async def test_tool_call_then_answer(session: Session) -> None:
     llm = FakeLLM(tool_calls(search_call(), tokens=150), answer("The boAt Airdopes 141 at ₹1,099 is my pick."))
 
-    result = await core.run_agent(session.id, "find me wireless earbuds under 3000", llm=llm)
+    result = await core.run_agent(session.id, "find me wireless earbuds under 3000", llm=llm, small_llm=llm)
 
     assert result.response == "The boAt Airdopes 141 at ₹1,099 is my pick."
     assert result.tool_calls_made == ["search_products"]
@@ -136,7 +137,7 @@ async def test_tool_call_then_answer(session: Session) -> None:
 
 async def test_answer_without_tools(session: Session) -> None:
     llm = FakeLLM(answer("Could you tell me your budget?"))
-    result = await core.run_agent(session.id, "I need earbuds", llm=llm)
+    result = await core.run_agent(session.id, "I need earbuds", llm=llm, small_llm=llm)
     assert result.response == "Could you tell me your budget?"
     assert result.tool_calls_made == [] and result.step_count == 1
 
@@ -146,7 +147,7 @@ async def test_parallel_tool_calls_all_run(session: Session) -> None:
         tool_calls(search_call("call_a", "boAt earbuds"), search_call("call_b", "Noise earbuds")),
         answer("Here are both."),
     )
-    result = await core.run_agent(session.id, "compare boAt and Noise", llm=llm)
+    result = await core.run_agent(session.id, "compare boAt and Noise", llm=llm, small_llm=llm)
     assert result.tool_calls_made == ["search_products", "search_products"]
     tool_msgs = [m for m in llm.agent_calls[1]["messages"] if m["role"] == "tool"]
     assert [m["tool_call_id"] for m in tool_msgs] == ["call_a", "call_b"]
@@ -157,7 +158,7 @@ async def test_parallel_tool_calls_all_run(session: Session) -> None:
 
 async def test_unknown_tool_error_is_fed_back(session: Session) -> None:
     llm = FakeLLM(tool_calls(call("buy_now", {"reasoning": "x"}, "call_1")), answer("Sorry, I can't buy directly."))
-    result = await core.run_agent(session.id, "buy it", llm=llm)
+    result = await core.run_agent(session.id, "buy it", llm=llm, small_llm=llm)
     assert result.response == "Sorry, I can't buy directly."
     fed_back = json.loads(llm.agent_calls[1]["messages"][-1]["content"])
     assert fed_back["error"] == "unknown_tool"
@@ -180,7 +181,7 @@ async def test_validation_error_lets_the_model_self_correct(session: Session) ->
     )
     llm = FakeLLM(tool_calls(bad), tool_calls(fixed), answer("Added to your cart."))
 
-    result = await core.run_agent(session.id, "add the boAt to my cart", llm=llm)
+    result = await core.run_agent(session.id, "add the boAt to my cart", llm=llm, small_llm=llm)
 
     first_error = json.loads(llm.agent_calls[1]["messages"][-1]["content"])
     assert first_error["error"] == "validation_failed" and "expected_schema" in first_error
@@ -199,7 +200,7 @@ async def test_max_steps_forces_a_final_answer(session: Session, monkeypatch: py
         tool_calls(search_call("call_2", "earbuds ANC")),
         answer("From what I found, the boAt Airdopes 141 fits best."),  # the forced final call
     )
-    result = await core.run_agent(session.id, "find earbuds", llm=llm)
+    result = await core.run_agent(session.id, "find earbuds", llm=llm, small_llm=llm)
 
     assert result.step_count == 2
     assert result.response == "From what I found, the boAt Airdopes 141 fits best."
@@ -214,7 +215,7 @@ async def test_max_steps_falls_back_to_results_if_final_call_fails(
 ) -> None:
     monkeypatch.setattr(settings, "max_agent_steps", 1)
     llm = FakeLLM(tool_calls(search_call()), LLMError("final call failed"))
-    result = await core.run_agent(session.id, "find earbuds", llm=llm)
+    result = await core.run_agent(session.id, "find earbuds", llm=llm, small_llm=llm)
     assert result.response.startswith("I ran out of research steps")
     assert SEARCH_HITS[0]["href"] in result.response  # the user still gets the links
 
@@ -225,14 +226,14 @@ async def test_max_steps_falls_back_to_results_if_final_call_fails(
 async def test_llm_error_propagates_to_the_caller(session: Session) -> None:
     llm = FakeLLM(LLMRateLimitError("rate limited", retry_after=5))
     with pytest.raises(LLMRateLimitError):
-        await core.run_agent(session.id, "find earbuds", llm=llm)
+        await core.run_agent(session.id, "find earbuds", llm=llm, small_llm=llm)
     # The user's message was saved before the failure.
     assert [m["role"] for m in await queries.get_messages(session.id)] == ["user"]
 
 
 async def test_unknown_session(db: None) -> None:
     llm = FakeLLM()
-    result = await core.run_agent("no-such-session", "hello", llm=llm)
+    result = await core.run_agent("no-such-session", "hello", llm=llm, small_llm=llm)
     assert result.response.startswith("Session not found")
     assert llm.calls == []
 
@@ -246,7 +247,7 @@ async def test_system_prompt_includes_preferences_cart_and_budget(session: Sessi
     await queries.update_session_budget(session.id, 3000)
     llm = FakeLLM(answer("Noted."))
 
-    await core.run_agent(session.id, "hi", llm=llm)
+    await core.run_agent(session.id, "hi", llm=llm, small_llm=llm)
 
     system = llm.agent_calls[0]["messages"][0]
     assert system["role"] == "system"
@@ -257,10 +258,10 @@ async def test_system_prompt_includes_preferences_cart_and_budget(session: Sessi
 
 async def test_history_is_replayed_as_text_without_tool_rows(session: Session) -> None:
     llm = FakeLLM(tool_calls(search_call()), answer("The boAt Airdopes 141 is my pick."))
-    await core.run_agent(session.id, "find earbuds", llm=llm)
+    await core.run_agent(session.id, "find earbuds", llm=llm, small_llm=llm)
 
     llm = FakeLLM(answer("Added."))
-    await core.run_agent(session.id, "add it to my cart", llm=llm)
+    await core.run_agent(session.id, "add it to my cart", llm=llm, small_llm=llm)
 
     roles = [(m["role"], m.get("content")) for m in llm.agent_calls[0]["messages"][1:]]
     # Tool rows are in the DB but not replayed: a tool result without its
@@ -279,13 +280,65 @@ async def test_provider_items_are_carried_to_the_next_call(session: Session) -> 
         {"type": "function_call", "call_id": "call_1", "name": "search_products", "arguments": "{}"},
     ]
     llm = FakeLLM(tool_calls(search_call(), provider_items=items), answer("Done."))
-    await core.run_agent(session.id, "find earbuds", llm=llm)
+    await core.run_agent(session.id, "find earbuds", llm=llm, small_llm=llm)
     assistant = llm.agent_calls[1]["messages"][-2]
     assert assistant[PROVIDER_ITEMS_KEY] == items
 
 
+async def test_suggestions_use_the_small_model(session: Session) -> None:
+    agent_llm = FakeLLM(answer("The boAt Airdopes 141 is my pick."))
+    small_llm = FakeLLM()
+    result = await core.run_agent(session.id, "find earbuds", llm=agent_llm, small_llm=small_llm)
+    assert [c["name"] for c in agent_llm.calls] == ["generate-agent-response"]
+    assert [c["name"] for c in small_llm.calls] == ["generate-suggestions"]
+    assert result.suggestions == ["Compare these two", "Show cheaper options"]
+
+
+# ---- tool execution: web tools concurrently, session tools in order ----
+
+
+async def test_web_tools_in_one_step_run_concurrently(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    def slow_search(query: str, max_results: int) -> list[JSONObject]:
+        time.sleep(0.3)  # search runs in a worker thread, so a blocking sleep is realistic
+        return [{"title": query, "href": f"https://shop.test/{query}", "body": "₹999"}]
+
+    monkeypatch.setattr(search, "_ddgs_text", slow_search)
+    calls = [search_call(f"call_{i}", f"q{i}") for i in range(3)]
+    llm = FakeLLM(tool_calls(*calls), answer("Done."))
+
+    started = time.perf_counter()
+    await core.run_agent(session.id, "compare three", llm=llm, small_llm=llm)
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 0.75  # three 0.3s searches one after another would take 0.9s
+    tool_msgs = [m for m in llm.agent_calls[1]["messages"] if m["role"] == "tool"]
+    assert [m["tool_call_id"] for m in tool_msgs] == ["call_0", "call_1", "call_2"]  # order kept
+    assert [json.loads(m["content"])["query_used"] for m in tool_msgs] == ["q0", "q1", "q2"]
+
+
+async def test_session_tools_run_in_the_order_requested(session: Session) -> None:
+    add = call(
+        "manage_cart",
+        {
+            "reasoning": "user asked",
+            "action": "add",
+            "product_name": "Noise Buds VS104",
+            "price": 999,
+            "url": "https://x/noise",
+        },
+        "call_add",
+    )
+    view = call("manage_cart", {"reasoning": "show the cart", "action": "view"}, "call_view")
+    llm = FakeLLM(tool_calls(add, view, search_call("call_s")), answer("Added."))
+    await core.run_agent(session.id, "add the Noise buds and show my cart", llm=llm, small_llm=llm)
+    tool_msgs = {
+        m["tool_call_id"]: json.loads(m["content"]) for m in llm.agent_calls[1]["messages"] if m["role"] == "tool"
+    }
+    assert "Noise Buds VS104" in json.dumps(tool_msgs["call_view"])  # the view saw the add
+
+
 async def test_suggestions_see_the_final_answer(session: Session) -> None:
     llm = FakeLLM(answer("The boAt Airdopes 141 is my pick."))
-    await core.run_agent(session.id, "find earbuds", llm=llm)
+    await core.run_agent(session.id, "find earbuds", llm=llm, small_llm=llm)
     suggestion_call = next(c for c in llm.calls if c["name"] == "generate-suggestions")
     assert "The boAt Airdopes 141 is my pick." in suggestion_call["messages"][-1]["content"]  # SR-41
