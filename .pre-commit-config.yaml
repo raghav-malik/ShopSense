@@ -1,5 +1,5 @@
 # Checks that run on `git commit`. Set up once per clone:
-#   uv sync && uv run pre-commit install
+#   uv sync && uv run pre-commit install --hook-type pre-commit --hook-type commit-msg
 # Run on every file:   uv run pre-commit run --all-files
 # ruff and mypy run from the project environment, so their versions come from
 # uv.lock (the same ones CI uses) instead of a second pin here.
@@ -47,3 +47,16 @@ repos:
         language: system
         types_or: [python, pyi]
         pass_filenames: false
+      - id: import-linter
+        name: import-linter (module layering, see AGENTS.md)
+        entry: uv run --frozen lint-imports
+        language: system
+        types: [python]
+        pass_filenames: false
+
+  # Commit messages follow Conventional Commits (feat:, fix:, docs:, ...); see AGENTS.md.
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v4.4.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
