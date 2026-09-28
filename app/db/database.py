@@ -1,3 +1,5 @@
+"""The SQLite connection (aiosqlite, WAL mode) and the schema."""
+
 import asyncio
 from pathlib import Path
 

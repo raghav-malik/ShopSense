@@ -1,3 +1,5 @@
+"""Builds OpenAI function-calling schemas from Pydantic input models."""
+
 from pydantic import BaseModel
 
 from app.llm.types import JSONObject

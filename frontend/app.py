@@ -25,6 +25,8 @@ st.set_page_config(page_title="ShopSense", page_icon="🛍️", layout="wide")
 
 
 class ApiError(Exception):
+    """A backend error, with the API's error code and the Langfuse trace link when there is one."""
+
     def __init__(self, message: str, code: str | None = None, trace_url: str | None = None):
         super().__init__(message)
         self.code = code
@@ -79,6 +81,7 @@ def get_suggestions(session_id: str) -> list[str]:
 
 
 def get_history(session_id: str) -> JSONObject:
+    """The session's saved messages and details."""
     return _call("GET", f"/sessions/{session_id}/history")
 
 
@@ -95,6 +98,7 @@ def get_backend_info() -> JSONObject | None:
 
 
 def start_session(session_id: str, messages: list[JSONObject] | None = None) -> None:
+    """Make `session_id` the current session and put it in the URL."""
     st.session_state.session_id = session_id
     st.session_state.messages = messages or []
     st.session_state.suggestions = []
@@ -104,6 +108,7 @@ def start_session(session_id: str, messages: list[JSONObject] | None = None) -> 
 
 
 def restore_or_create_session() -> None:
+    """Reopen the session in the URL (e.g. after a refresh), or create a new one."""
     session_id = st.query_params.get("session")
     if session_id:
         try:
@@ -163,6 +168,7 @@ def _short(text: str, limit: int = 90) -> str:
 
 
 def render_assistant_extras(message: JSONObject, index: int) -> None:
+    """Product cards and the Langfuse debug panel under an answer."""
     for n, product in enumerate(message.get("products", [])):
         icon = "🛒" if message.get("products_cited") else "🔎"
         with st.expander(f"{icon} {_short(product.get('title') or 'Product')}"):
@@ -186,6 +192,7 @@ def render_assistant_extras(message: JSONObject, index: int) -> None:
 
 
 def render_message(message: JSONObject, index: int) -> None:
+    """One chat message (errors in red, with a trace link)."""
     with st.chat_message(message["role"]):
         if message.get("error"):
             st.error(message["content"])

@@ -1,3 +1,5 @@
+"""The get_preferences tool: read or save the user's lasting preferences."""
+
 import json
 from typing import Literal, Self
 
@@ -30,6 +32,7 @@ class PreferencesInput(BaseModel):
 
     @model_validator(mode="after")
     def check_set_fields(self) -> Self:
+        """Saving a preference needs both a key and a value."""
         if self.action == "set" and (not self.key or self.value is None):
             raise ValueError("key and value are required when action is 'set'")
         return self

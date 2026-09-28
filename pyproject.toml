@@ -56,6 +56,7 @@ select = [
     "PTH",           # pathlib over os.path
     "PT",            # pytest style
     "FAST",          # FastAPI-specific rules
+    "D100", "D101", "D102", "D103", "D106",  # docstrings on public modules, classes and functions
 ]
 ignore = [
     "E501",    # line length is the formatter's job; long strings/URLs are fine
@@ -66,14 +67,11 @@ ignore = [
 "tests/**" = [
     "S101",    # assert is how pytest tests are written
     "PT018",   # composite assertions read fine in these tests
+    "D",       # test names say what they check
 ]
-# `if __name__ == "__main__"` smoke tests print their results on purpose.
-"app/llm/adapter.py" = ["T201"]
-"app/agent/core.py" = ["T201"]
-"app/db/queries.py" = ["T201"]
-"app/tools/search.py" = ["T201"]
-# Evals are run by hand and report by printing.
+# Run by hand; printing the result is their job.
 "evals/**" = ["T201"]
+"scripts/**" = ["T201"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["app"]
@@ -83,7 +81,7 @@ known-first-party = ["app"]
 
 [tool.mypy]
 python_version = "3.12"
-files = ["app", "frontend", "tests", "evals"]
+files = ["app", "frontend", "tests", "evals", "scripts"]
 # frontend/app.py would otherwise clash with the `app` package; name modules by path.
 explicit_package_bases = true
 strict = true

@@ -1,3 +1,5 @@
+"""Session endpoints."""
+
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -7,6 +9,8 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 
 class CreateSessionResponse(BaseModel):
+    """A newly created session."""
+
     session_id: str
     created_at: str
 

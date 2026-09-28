@@ -1,3 +1,5 @@
+"""Every database read and write: sessions, messages, cart and preferences."""
+
 import json
 from typing import Any, cast
 
@@ -20,6 +22,7 @@ async def create_session(session_id: str | None = None) -> Session:
 
 
 async def get_session(session_id: str) -> Session | None:
+    """The session, or None if it doesn't exist."""
     db = await get_db()
     rows = list(await db.execute_fetchall("SELECT * FROM sessions WHERE id = ?", (session_id,)))
     if not rows:
@@ -35,6 +38,7 @@ async def get_session(session_id: str) -> Session | None:
 
 
 async def update_session_budget(session_id: str, budget: float) -> None:
+    """Set the session's budget (INR)."""
     db = await get_db()
     await db.execute(
         "UPDATE sessions SET budget = ?, updated_at = ? WHERE id = ?",
@@ -47,6 +51,7 @@ async def update_session_budget(session_id: str, budget: float) -> None:
 
 
 async def save_message(msg: Message) -> None:
+    """Store a message."""
     db = await get_db()
     await db.execute(
         """INSERT INTO messages (id, session_id, role, content, tool_name, tool_call_id, created_at, token_count)
@@ -92,6 +97,7 @@ async def get_messages(session_id: str, limit: int = 50) -> list[MessageRow]:
 async def add_to_cart(
     session_id: str, product_name: str, price: float | None, url: str, source: str | None = None
 ) -> CartItem:
+    """Add a product to the session's cart."""
     db = await get_db()
     item = CartItem(session_id=session_id, product_name=product_name, price=price, url=url, source=source)
     await db.execute(
@@ -104,6 +110,7 @@ async def add_to_cart(
 
 
 async def remove_from_cart(session_id: str, product_name: str) -> bool:
+    """Remove a product by exact name; False if it wasn't in the cart."""
     db = await get_db()
     cursor = await db.execute(
         "DELETE FROM cart_items WHERE session_id = ? AND product_name = ?",
@@ -114,6 +121,7 @@ async def remove_from_cart(session_id: str, product_name: str) -> bool:
 
 
 async def get_cart(session_id: str) -> list[CartItemRow]:
+    """The session's cart, oldest item first."""
     db = await get_db()
     rows = await db.execute_fetchall(
         "SELECT * FROM cart_items WHERE session_id = ? ORDER BY added_at ASC",
@@ -123,6 +131,7 @@ async def get_cart(session_id: str) -> list[CartItemRow]:
 
 
 async def clear_cart(session_id: str) -> None:
+    """Remove every item from the session's cart."""
     db = await get_db()
     await db.execute("DELETE FROM cart_items WHERE session_id = ?", (session_id,))
     await db.commit()
@@ -139,6 +148,7 @@ async def get_all_preferences() -> dict[str, Any]:
 
 
 async def set_preference(key: str, value: object) -> None:
+    """Save a preference (any JSON value), replacing an existing one with the same key."""
     db = await get_db()
     encoded = json.dumps(value)
     await db.execute(
@@ -147,34 +157,3 @@ async def set_preference(key: str, value: object) -> None:
         (new_id(), key, encoded, now_iso()),
     )
     await db.commit()
-
-
-if __name__ == "__main__":
-    # Smoke test against a throwaway DB file (your real shopsense.db is untouched).
-    # From the project root:  python -m app.db.queries
-    import asyncio
-    import tempfile
-    from pathlib import Path
-
-    from app.config import settings
-    from app.db.database import close_db, init_db
-
-    async def _smoke_test() -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            settings.db_path = str(Path(tmp) / "smoke.db")
-            await init_db()
-            try:
-                session = await create_session()
-                print(f"created session: {session.id}")
-                await save_message(
-                    Message(session_id=session.id, role="user", content="Find me wireless earbuds under 3000")
-                )
-                messages = await get_messages(session.id)
-                print(f"retrieved {len(messages)} message(s): {messages[0]['role']}: {messages[0]['content']!r}")
-                if messages[0]["content"] != "Find me wireless earbuds under 3000":
-                    raise SystemExit("FAILED: retrieved message doesn't match what was saved")
-                print("OK")
-            finally:
-                await close_db()
-
-    asyncio.run(_smoke_test())

@@ -107,6 +107,7 @@ async def _run_once(name: str) -> dict[str, bool | str]:
 
 
 async def main(runs: int, pause: float) -> None:
+    """Run every scenario `runs` times and print what each injection achieved."""
     with tempfile.TemporaryDirectory() as tmp:
         settings.db_path = f"{tmp}/eval.db"
         await database.init_db()

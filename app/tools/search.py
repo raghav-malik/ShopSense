@@ -1,3 +1,5 @@
+"""The search_products tool: web search through ddgs (region in-en), off the event loop."""
+
 import asyncio
 from urllib.parse import urlparse
 
@@ -125,15 +127,3 @@ async def search_products(query: str, max_results: int = settings.max_search_res
 def _ddgs_text(query: str, max_results: int) -> list[JSONObject]:
     with DDGS() as ddgs:
         return ddgs.text(query, region=SEARCH_REGION, max_results=max_results)
-
-
-if __name__ == "__main__":
-    # Smoke test. From the project root:  python -m app.tools.search
-    import io
-    import json
-    import sys
-
-    if isinstance(sys.stdout, io.TextIOWrapper):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    print(json.dumps(SEARCH_SCHEMA, indent=2))
-    print(json.dumps(asyncio.run(search_products("wireless earbuds under 3000 INR")), indent=2, ensure_ascii=False))

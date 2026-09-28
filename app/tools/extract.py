@@ -1,3 +1,5 @@
+"""The extract_product_info tool: fetch a product page (with an SSRF guard) and read its structured data."""
+
 import asyncio
 import ipaddress
 import json
@@ -33,6 +35,7 @@ class ExtractProductInput(BaseModel):
     @field_validator("url")
     @classmethod
     def check_http_url(cls, v: str) -> str:
+        """Reject anything but an absolute http(s) URL before fetching."""
         parsed = urlparse(v)
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
             raise ValueError("url must be an absolute http(s) URL, e.g. 'https://www.amazon.in/dp/B0XXXX'")
@@ -63,6 +66,8 @@ _USE_SNIPPET = "Don't retry this site; use the price and link from the search re
 
 
 class FetchError(Exception):
+    """A failed fetch: `kind` becomes the result's error_type, `hint` tells the agent what to do next."""
+
     def __init__(self, kind: str, message: str, hint: str):
         super().__init__(message)
         self.kind, self.message, self.hint = kind, message, hint

@@ -53,6 +53,7 @@ CASES: list[tuple[str, str | None, ChangeKind, bool]] = [
 
 
 async def main() -> None:
+    """Check every labelled case and print the score."""
     llm = get_small_llm_adapter()
     print(f"checker: {settings.llm_provider}/{settings.llm_small_model}\n")
     wrong = 0

@@ -1,3 +1,5 @@
+"""Per-session endpoints: chat, follow-up suggestions, cart and history."""
+
 import asyncio
 import logging
 import math
@@ -33,6 +35,8 @@ router = APIRouter(
 
 
 class ChatRequest(BaseModel):
+    """A user message for the agent."""
+
     message: str = Field(max_length=4000)
 
 
@@ -91,6 +95,8 @@ async def _trace_url(trace_id: str) -> str | None:
 
 
 class SuggestionsResponse(BaseModel):
+    """Follow-up messages the user might send next."""
+
     suggestions: list[str]
 
 
@@ -105,12 +111,16 @@ async def suggestions(session_id: str) -> SuggestionsResponse:
 
 
 class CartItemOut(BaseModel):
+    """A cart item as the API returns it."""
+
     product_name: str
     price: float | None
     url: str
 
 
 class CartResponse(BaseModel):
+    """The session's cart and its total."""
+
     items: list[CartItemOut]
     total: float
     currency: str = "INR"
@@ -128,12 +138,16 @@ async def get_cart(session_id: str) -> CartResponse:
 
 
 class SessionInfo(BaseModel):
+    """Session details returned with its history."""
+
     id: str
     created_at: str
     budget: float | None
 
 
 class HistoryResponse(BaseModel):
+    """A session's messages (tool results included) and its details."""
+
     messages: list[MessageRow]
     session: SessionInfo
 

@@ -1,3 +1,5 @@
+"""The agent's system prompt: identity, rules, research workflow, web-content rule, and the user's preferences, budget and cart."""
+
 import json
 from typing import Any
 

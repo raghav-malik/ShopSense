@@ -63,6 +63,7 @@ class TurnBudget:
     unpriced_calls: int = 0
 
     def add(self, model: str, usage: dict[str, int]) -> None:
+        """Count one LLM call's tokens and estimated cost."""
         self.tokens += usage.get("total_tokens", 0)
         cost = estimate_cost_usd(model, usage)
         if cost is None:

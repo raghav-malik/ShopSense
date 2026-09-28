@@ -1,3 +1,5 @@
+"""The tool registry: schemas for the LLM, and validated, error-safe dispatch of its tool calls."""
+
 import json
 from collections.abc import Awaitable, Callable
 from typing import NamedTuple
@@ -13,6 +15,8 @@ from app.tools.search import SEARCH_SCHEMA, SearchProductsInput, search_products
 
 
 class ToolSpec(NamedTuple):
+    """Everything the registry needs to show a tool to the LLM and run it."""
+
     # Called with the validated input's fields as keyword arguments.
     executor: Callable[..., Awaitable[JSONObject]]
     schema: JSONObject  # OpenAI function-calling schema shown to the LLM
