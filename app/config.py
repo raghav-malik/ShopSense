@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Resolve .env from the project root, not the CWD, so uvicorn, streamlit and
@@ -49,16 +49,19 @@ class Settings(BaseSettings):
         default="chat_completions",
         description="'chat_completions' (default) or 'responses' (OpenAI only: reasoning together with tools)",
     )
-    groq_api_key: str | None = Field(
+    # Keys are SecretStr: they print as '**********' in repr(), logs, tracebacks
+    # and model_dump(), and code reads the value only where it's sent
+    # (.get_secret_value() in the LLM and Langfuse clients).
+    groq_api_key: SecretStr | None = Field(
         default=None, description="Groq API key from console.groq.com (required when LLM_PROVIDER=groq)"
     )
-    openai_api_key: str | None = Field(
+    openai_api_key: SecretStr | None = Field(
         default=None, description="OpenAI API key from platform.openai.com (required when LLM_PROVIDER=openai)"
     )
     # AliasChoices: accepted names in the environment. The Pydantic mypy plugin
     # can't check aliased fields in __init__, but Settings is only ever filled
     # from the environment, so that check doesn't apply here.
-    gemini_api_key: str | None = Field(  # type: ignore[pydantic-alias]
+    gemini_api_key: SecretStr | None = Field(  # type: ignore[pydantic-alias]
         default=None,
         validation_alias=AliasChoices("GEMINI_API_KEY", "GOOGLE_API_KEY"),
         description="Gemini API key from aistudio.google.com (required when LLM_PROVIDER=gemini)",
@@ -83,7 +86,7 @@ class Settings(BaseSettings):
 
     # Langfuse
     langfuse_public_key: str = Field(..., description="Langfuse public key")
-    langfuse_secret_key: str = Field(..., description="Langfuse secret key")
+    langfuse_secret_key: SecretStr = Field(..., description="Langfuse secret key")
     langfuse_base_url: str = Field(  # type: ignore[pydantic-alias]  # see gemini_api_key
         default="https://cloud.langfuse.com",
         # Current SDK name is LANGFUSE_BASE_URL; LANGFUSE_HOST is the legacy one.
@@ -128,6 +131,7 @@ class Settings(BaseSettings):
         self.llm_reasoning_effort = self.llm_reasoning_effort or reasoning_effort
 
         # Fail at startup rather than on the agent's first call.
+        # An empty SecretStr is falsy too, so KEY= in .env counts as missing.
         if not self.llm_api_key:
             raise ValueError(f"{self.llm_provider.upper()}_API_KEY is required when LLM_PROVIDER={self.llm_provider}")
         if self.llm_api == "responses" and self.llm_provider != "openai":
@@ -141,7 +145,7 @@ class Settings(BaseSettings):
         return self
 
     @property
-    def llm_api_key(self) -> str | None:
+    def llm_api_key(self) -> SecretStr | None:
         return {
             "openai": self.openai_api_key,
             "groq": self.groq_api_key,

@@ -26,7 +26,17 @@ _REDACTIONS = [
 ]
 
 
+def _configured_secrets() -> list[str]:
+    """The keys this process holds, whatever their format: the patterns above
+    only know today's key formats (Google's newer Gemini keys don't start with
+    'AIza'). Longest first, so a key that contains another is replaced whole."""
+    values = [settings.openai_api_key, settings.groq_api_key, settings.gemini_api_key, settings.langfuse_secret_key]
+    return sorted({s.get_secret_value() for s in values if s is not None and len(s) >= 8}, key=len, reverse=True)
+
+
 def _redact(text: str) -> str:
+    for secret in _configured_secrets():
+        text = text.replace(secret, "[SECRET]")
     for pattern, replacement in _REDACTIONS:
         text = pattern.sub(replacement, text)
     return text
@@ -51,7 +61,7 @@ def mask_otel_spans(*, params: MaskOtelSpansParams) -> MaskOtelSpansResult | Non
 
 _langfuse = Langfuse(
     public_key=settings.langfuse_public_key,
-    secret_key=settings.langfuse_secret_key,
+    secret_key=settings.langfuse_secret_key.get_secret_value(),
     base_url=settings.langfuse_base_url,
     environment=settings.langfuse_tracing_environment,
     release=settings.langfuse_release,

@@ -4,7 +4,7 @@ Responses API item conversion) that the agent core relies on staying hidden."""
 
 import pytest
 from openai.types.chat import ChatCompletion
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 import app.llm.adapter as adapter_module
 from app.config import Settings, settings
@@ -67,7 +67,7 @@ def test_gemini_provider_defaults() -> None:
     assert s.llm_model == "gemini-3.8-flash"
     assert s.llm_base_url == "https://generativelanguage.googleapis.com/v1beta/openai/"
     assert s.llm_reasoning_effort is None  # Gemini 3 thinking can't be disabled; keep its default
-    assert s.llm_api_key == "AIza-test"
+    assert s.llm_api_key is not None and s.llm_api_key.get_secret_value() == "AIza-test"
 
 
 def test_gemini_requires_its_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -79,7 +79,8 @@ def test_gemini_requires_its_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_google_api_key_alias(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GOOGLE_API_KEY", "AIza-from-alias")
-    assert Settings(llm_provider="gemini").llm_api_key == "AIza-from-alias"
+    key = Settings(llm_provider="gemini").llm_api_key
+    assert key is not None and key.get_secret_value() == "AIza-from-alias"
 
 
 @pytest.mark.parametrize(
@@ -95,7 +96,7 @@ def test_get_llm_adapter_picks_by_config(
 ) -> None:
     monkeypatch.setattr(settings, "llm_provider", provider)
     monkeypatch.setattr(settings, "llm_api", api)
-    monkeypatch.setattr(settings, "gemini_api_key", "AIza-test")
+    monkeypatch.setattr(settings, "gemini_api_key", SecretStr("AIza-test"))
     adapter_module.get_llm_adapter.cache_clear()
     try:
         assert type(adapter_module.get_llm_adapter()) is expected
@@ -216,7 +217,7 @@ def test_small_adapter_uses_the_small_model_without_reasoning(
 ) -> None:
     monkeypatch.setattr(settings, "llm_provider", provider)
     monkeypatch.setattr(settings, "llm_api", api)
-    monkeypatch.setattr(settings, "gemini_api_key", "AIza-test")
+    monkeypatch.setattr(settings, "gemini_api_key", SecretStr("AIza-test"))
     monkeypatch.setattr(settings, "llm_small_model", "small-model")
     monkeypatch.setattr(settings, "llm_reasoning_effort", "medium")  # the agent's setting
     adapter_module.get_small_llm_adapter.cache_clear()
