@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only token: this workflow only checks code.
+permissions:
+  contents: read
+
+# A newer push to the same branch or PR cancels the run it replaces.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Actions are pinned to commit SHAs (tags can be moved); the comment is the version.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.19"
+          enable-cache: true
+
+      # --locked fails if uv.lock is out of date with pyproject.toml.
+      # Python comes from .python-version.
+      - name: Install
+        run: uv sync --locked
+
+      - name: Format
+        run: uv run --frozen ruff format --check .
+
+      - name: Lint
+        run: uv run --frozen ruff check --output-format=github .
+
+      - name: Types
+        run: uv run --frozen mypy
+
+      # Hermetic: dummy keys, tracing off, temp databases (tests/conftest.py).
+      # Network tests hit DuckDuckGo and real shops, too flaky for a gate.
+      - name: Tests
+        run: uv run --frozen pytest -m "not network" --cov --cov-report=term
+
+      - name: requirements.txt matches uv.lock
+        run: |
+          uv export --frozen --no-dev --no-hashes --no-annotate --output-file=requirements.txt --quiet
+          git diff --exit-code requirements.txt
+
+      - name: Known vulnerabilities in runtime dependencies
+        run: uv run --frozen pip-audit -r requirements.txt --disable-pip --no-deps --progress-spinner off
+
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # scan every commit, not just the latest
+          persist-credentials: false
+
+      - name: Gitleaks
+        run: >-
+          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.30.1
+          git /repo --redact --verbose --exit-code 1

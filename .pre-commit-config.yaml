@@ -1,0 +1,49 @@
+# Checks that run on `git commit`. Set up once per clone:
+#   uv sync && uv run pre-commit install
+# Run on every file:   uv run pre-commit run --all-files
+# ruff and mypy run from the project environment, so their versions come from
+# uv.lock (the same ones CI uses) instead of a second pin here.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  # Hardcoded API keys never reach a commit (this project handles four providers' keys).
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+
+  # requirements.txt is generated from uv.lock; regenerate it whenever the lock changes.
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.12.19
+    hooks:
+      - id: uv-export
+        args: [--frozen, --no-dev, --no-hashes, --no-annotate, --output-file=requirements.txt, --quiet]
+
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run --frozen ruff check --fix --force-exclude
+        language: system
+        types_or: [python, pyi]
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --frozen ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+      - id: mypy
+        name: mypy
+        # Whole project, not just the staged files: a change in one module can break its callers.
+        entry: uv run --frozen mypy
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
