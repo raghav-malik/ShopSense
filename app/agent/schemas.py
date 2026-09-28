@@ -12,3 +12,4 @@ class AgentResponse(BaseModel):
     trace_url: str | None = None
     step_count: int = 0
     total_tokens: int = 0
+    estimated_cost_usd: float | None = None  # None when a model's price isn't known

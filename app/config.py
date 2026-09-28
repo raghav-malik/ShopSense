@@ -111,6 +111,12 @@ class Settings(BaseSettings):
 
     # Agent
     max_agent_steps: int = Field(default=10, description="Max ReAct iterations per turn (guardrail)")
+    # Runaway guards, well above a normal turn (about 15-20K tokens and $0.001-0.002
+    # on gpt-6-luna); a normal gpt-6-sol turn (about $0.05) fits too.
+    max_turn_tokens: int = Field(default=100_000, description="Token budget for the agent's LLM calls in one turn")
+    max_turn_cost_usd: float = Field(
+        default=0.25, description="Estimated cost budget (USD) for the agent's LLM calls in one turn"
+    )
     max_search_results: int = Field(default=5, description="Default number of search results per query")
 
     model_config = SettingsConfigDict(

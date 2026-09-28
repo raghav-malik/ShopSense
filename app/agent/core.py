@@ -22,6 +22,7 @@ from typing import Literal
 
 from langfuse import observe, propagate_attributes
 
+from app.agent.guardrails import RepeatGuard, TurnBudget, repeat_result
 from app.agent.prompts import build_system_prompt
 from app.agent.request_check import RequestCheck, change_kind, refusal
 from app.agent.schemas import AgentResponse
@@ -86,6 +87,7 @@ async def run_agent(
             "step_count": result.step_count,
             "tool_calls_made": result.tool_calls_made,
             "total_tokens": result.total_tokens,
+            "estimated_cost_usd": result.estimated_cost_usd,
         },
     )
     return result
@@ -128,10 +130,17 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
     tools_schema = get_tool_schemas()
     tools_called: list[str] = []
     products_found: list[JSONObject] = []
-    total_tokens = 0
+    budget = TurnBudget(settings.max_turn_tokens, settings.max_turn_cost_usd)
+    repeat_guard = RepeatGuard()
     step_count = 0
+    limit_reason = f"max_agent_steps ({settings.max_agent_steps}) reached"
 
     for step in range(settings.max_agent_steps):
+        # Checked between steps: stopping after a tool-calling LLM call but before
+        # its tools run would leave tool calls without results in the history.
+        if reason := budget.limit_reached():
+            limit_reason = reason
+            break
         step_count = step + 1
 
         # LLM call — traced as a generation inside the adapter
@@ -141,7 +150,7 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
             name="generate-agent-response",
             trace_metadata={"step": step_count, "operation": "agent_step"},
         )
-        total_tokens += response.usage.get("total_tokens", 0)
+        budget.add(response.model, response.usage)
 
         # Check if the LLM wants to respond (no tool calls)
         if response.finish_reason == "stop" or not response.tool_calls:
@@ -163,7 +172,8 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
                 products_found=products_found,
                 trace_url=await _current_trace_url(),
                 step_count=step_count,
-                total_tokens=total_tokens,
+                total_tokens=budget.tokens,
+                estimated_cost_usd=_cost(budget),
             )
 
         # Tool dispatch — process each tool call
@@ -187,7 +197,7 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
         messages.append(assistant_msg)
 
         # Same step number as the generation that requested them.
-        results = await _execute_tool_calls(response.tool_calls, session_id, step_count, request_check)
+        results = await _execute_tool_calls(response.tool_calls, session_id, step_count, request_check, repeat_guard)
         for tc, result in zip(response.tool_calls, results, strict=True):
             tool_name = tc.function.name
             tools_called.append(tool_name)
@@ -217,14 +227,13 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
                 )
             )
 
-    # Guardrail: max steps reached. Rather than discarding the research, make one
-    # last call with tools disabled so the model answers from what it gathered.
-    langfuse.update_current_span(
-        level="WARNING", status_message=f"max_agent_steps ({settings.max_agent_steps}) reached"
+    # Guardrail: step limit or turn budget reached. Rather than discarding the
+    # research, make one last call with tools disabled so the model answers from
+    # what it gathered.
+    langfuse.update_current_span(level="WARNING", status_message=limit_reason)
+    final_text = _without_images(
+        await _answer_from_research(llm, messages, tools_schema, products_found, budget, step_count + 1, limit_reason)
     )
-    final_text, final_tokens = await _answer_from_research(llm, messages, tools_schema, products_found)
-    final_text = _without_images(final_text)
-    total_tokens += final_tokens
     await queries.save_message(
         Message(
             session_id=session_id,
@@ -238,8 +247,14 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
         products_found=products_found,
         trace_url=await _current_trace_url(),
         step_count=step_count,
-        total_tokens=total_tokens,
+        total_tokens=budget.tokens,
+        estimated_cost_usd=_cost(budget),
     )
+
+
+def _cost(budget: TurnBudget) -> float | None:
+    """The turn's estimated cost, or None if a model in it has no known price."""
+    return round(budget.cost_usd, 6) if budget.unpriced_calls == 0 else None
 
 
 # ![alt](url): the UI renders markdown, and the browser loads an image's URL by
@@ -263,24 +278,32 @@ STEP_LIMIT_NOTE = (
 
 
 async def _answer_from_research(
-    llm: LLMAdapter, messages: list[ChatMessage], tools_schema: list[JSONObject], products_found: list[JSONObject]
-) -> tuple[str, int]:
-    """Final answer after hitting max_agent_steps. Falls back to listing the
-    search results if even this call fails, so the user always gets something."""
+    llm: LLMAdapter,
+    messages: list[ChatMessage],
+    tools_schema: list[JSONObject],
+    products_found: list[JSONObject],
+    budget: TurnBudget,
+    step: int,
+    reason: str,
+) -> str:
+    """Final answer after hitting the step limit or the turn budget. Falls back
+    to listing the search results if even this call fails, so the user always
+    gets something. The call's usage counts toward the budget."""
     try:
         response = await llm.chat(
             [*messages, {"role": "system", "content": STEP_LIMIT_NOTE}],
             # Tools stay in the request (the history references them) but can't be called.
             tools_schema,
             tool_choice="none",
-            name="answer-at-step-limit",
-            trace_metadata={"step": settings.max_agent_steps + 1, "operation": "final_answer_at_limit"},
+            name="answer-at-limit",
+            trace_metadata={"step": step, "operation": "final_answer_at_limit", "limit": reason},
         )
+        budget.add(response.model, response.usage)
         if response.content:
-            return response.content, response.usage.get("total_tokens", 0)
+            return response.content
     except LLMError:
         pass
-    return _results_fallback(products_found), 0
+    return _results_fallback(products_found)
 
 
 def _results_fallback(products_found: list[JSONObject]) -> str:
@@ -324,15 +347,22 @@ MAX_CONCURRENT_TOOLS = 4
 
 
 async def _execute_tool_calls(
-    tool_calls: list[ToolCall], session_id: str, step: int, request_check: RequestCheck
+    tool_calls: list[ToolCall], session_id: str, step: int, request_check: RequestCheck, repeat_guard: RepeatGuard
 ) -> list[str]:
     """Run one step's tool calls; results come back in the order of `tool_calls`."""
     results: dict[int, str] = {}
     limit = asyncio.Semaphore(MAX_CONCURRENT_TOOLS)
+    # Decided up front, in the model's order, so the first of two identical
+    # calls in one step is the one that runs, however the concurrent ones finish.
+    repeats = {
+        i: first
+        for i, call in enumerate(tool_calls)
+        if (first := repeat_guard.first_seen_step(call.function.name, call.function.arguments, step)) is not None
+    }
 
     async def run(index: int, call: ToolCall) -> None:
         results[index] = await _execute_tool_traced(
-            call.function.name, call.function.arguments, session_id, step, request_check
+            call.function.name, call.function.arguments, session_id, step, request_check, repeats.get(index)
         )
 
     async def run_concurrently(index: int, call: ToolCall) -> None:
@@ -352,7 +382,7 @@ async def _execute_tool_calls(
 
 
 async def _execute_tool_traced(
-    name: str, arguments: str, session_id: str, step: int, request_check: RequestCheck
+    name: str, arguments: str, session_id: str, step: int, request_check: RequestCheck, repeat_of: int | None = None
 ) -> str:
     """Execute a tool, traced as a Langfuse tool/retriever observation.
 
@@ -373,7 +403,9 @@ async def _execute_tool_traced(
         metadata={"reasoning": reasoning, "step": step, "requested_tool": name},
     ) as observation:
         kind = change_kind(name, arguments)
-        if kind is not None and not await request_check.allows(kind):
+        if repeat_of is not None:
+            result = repeat_result(name, repeat_of)  # same call, same arguments: not run again
+        elif kind is not None and not await request_check.allows(kind):
             result = refusal(kind)  # the user didn't ask for this change; nothing is stored
         else:
             result = await execute_tool(name, arguments, session_id)
