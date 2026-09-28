@@ -30,6 +30,7 @@ from app.db import queries
 from app.db.models import Message
 from app.llm.adapter import get_llm_adapter
 from app.llm.errors import LLMError
+from app.llm.types import PROVIDER_ITEMS_KEY
 from app.tools.registry import TOOL_MAP, execute_tool, get_tool_schemas
 
 langfuse = get_langfuse()
@@ -148,6 +149,10 @@ async def _run_agent(session_id: str, user_message: str) -> AgentResponse:
                 "type": "function",
                 "function": {"name": tc.function.name, "arguments": tc.function.arguments},
             })
+        if response.provider_items:
+            # Responses API: reasoning items (+ the exact function calls) must go
+            # back on the next call so the model keeps its chain of thought.
+            assistant_msg[PROVIDER_ITEMS_KEY] = response.provider_items
         messages.append(assistant_msg)
 
         for tc in response.tool_calls:

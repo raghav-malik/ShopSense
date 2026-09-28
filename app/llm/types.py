@@ -22,8 +22,17 @@ class LLMMessage(BaseModel):
 
 class LLMResponse(BaseModel):
     content: str | None = None
-    reasoning: str | None = None  # model's thinking when the provider returns it (Groq gpt-oss; not OpenAI Chat Completions)
+    reasoning: str | None = None  # model's thinking when returned (Groq gpt-oss; OpenAI Responses summaries)
     tool_calls: list[ToolCall] | None = None
     finish_reason: str  # 'stop' | 'tool_calls' | 'length'
     usage: dict  # {'prompt_tokens': int, 'completion_tokens': int, 'total_tokens': int}
     model: str
+    # Opaque output items the provider needs back on the next call of this turn
+    # (Responses API: reasoning items with encrypted content + function calls).
+    # Callers attach them to the assistant message as PROVIDER_ITEMS_KEY.
+    provider_items: list[dict] | None = None
+
+
+# Message key carrying LLMResponse.provider_items through the chat-format history.
+# Adapters that don't use it strip it before sending.
+PROVIDER_ITEMS_KEY = "_provider_items"
