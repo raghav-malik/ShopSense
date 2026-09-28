@@ -10,6 +10,14 @@ from app.tools.base import pydantic_to_tool_schema
 # ShopSense prices in INR, so bias results toward Indian stores (ddgs defaults to us-en).
 SEARCH_REGION = "in-en"
 
+# Every result is resent to the LLM on each later step of the turn, so result
+# size multiplies into cost and latency on any provider (and on Groq's free tier,
+# 8K tokens/min, it decides whether a turn fits at all). Measured on real traces:
+# cutting snippets at 400 chars kept 36/38 prices while dropping 36% of the text;
+# a few 1-2.5K-char snippets were most of the bulk.
+MAX_RESULTS = 5
+SNIPPET_MAX_CHARS = 400
+
 
 class SearchProductsInput(BaseModel):
     """Input schema for the search_products tool."""
@@ -22,10 +30,10 @@ class SearchProductsInput(BaseModel):
         description="Search query optimized for finding products. Include category, budget if known, and key requirements. Example: 'wireless earbuds under 3000 INR waterproof'",
     )
     max_results: int = Field(
-        default=settings.max_search_results,
+        default=min(settings.max_search_results, MAX_RESULTS),
         ge=1,
-        le=10,
-        description="Number of results to return (1-10).",
+        le=MAX_RESULTS,
+        description=f"Number of results to return (1-{MAX_RESULTS}).",
     )
 
 
@@ -58,7 +66,7 @@ async def search_products(query: str, max_results: int = settings.max_search_res
             formatted.append({
                 "title": r.get("title", ""),
                 "url": url,
-                "snippet": r.get("body", ""),
+                "snippet": _truncate(r.get("body", ""), SNIPPET_MAX_CHARS),
                 "source": urlparse(url).netloc.removeprefix("www.") if url else "",
             })
 
@@ -70,6 +78,13 @@ async def search_products(query: str, max_results: int = settings.max_search_res
 
     except Exception as e:
         return {"error": f"Search failed: {str(e)}", "results": []}
+
+
+def _truncate(text: str, limit: int) -> str:
+    """Cut at a word boundary so a trailing price like '₹2,79' isn't left half-written."""
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(" ", 1)[0] + " …"
 
 
 def _ddgs_text(query: str, max_results: int) -> list[dict]:

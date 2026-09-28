@@ -1,0 +1,70 @@
+"""Langfuse client for the whole process.
+
+Built eagerly at import, from `settings`: pydantic-settings does not export .env
+values to os.environ, and `@observe` / `get_client()` fall back to an unconfigured
+client (a silent no-op) if no client exists when the first traced call runs.
+Import this module before anything traced.
+"""
+
+import re
+from typing import Optional
+
+from langfuse import Langfuse
+from langfuse.types import MaskOtelSpansParams, MaskOtelSpansResult, OtelSpanPatch
+
+from app.config import settings
+
+# Users type contact details into chat, and scraped product pages can carry
+# them too. Redact before anything leaves the process.
+_REDACTIONS = [
+    (re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"), "[EMAIL]"),
+    (re.compile(r"\b(?:sk|pk)-lf-[\w-]{8,}\b"), "[LANGFUSE_KEY]"),
+    (re.compile(r"\bgsk_[A-Za-z0-9]{20,}\b"), "[GROQ_KEY]"),
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"), "[API_KEY]"),
+    (re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{16,}"), "Bearer [TOKEN]"),
+]
+
+
+def _redact(text: str) -> str:
+    for pattern, replacement in _REDACTIONS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def mask_otel_spans(*, params: MaskOtelSpansParams) -> Optional[MaskOtelSpansResult]:
+    patches = {}
+    for identifier, span in params.spans.items():
+        replacements = {
+            key: masked
+            for key, value in span.attributes.items()
+            if isinstance(value, str) and (masked := _redact(value)) != value
+        }
+        if replacements:
+            patches[identifier] = OtelSpanPatch(set_attributes=replacements)
+    return MaskOtelSpansResult(span_patches=patches) if patches else None
+
+
+_langfuse = Langfuse(
+    public_key=settings.langfuse_public_key,
+    secret_key=settings.langfuse_secret_key,
+    base_url=settings.langfuse_base_url,
+    environment=settings.langfuse_tracing_environment,
+    release=settings.langfuse_release,
+    timeout=settings.langfuse_timeout,
+    mask_otel_spans=mask_otel_spans,
+)
+
+
+def get_langfuse() -> Langfuse:
+    """Get the Langfuse client singleton."""
+    return _langfuse
+
+
+def flush_langfuse():
+    """Send buffered traces now. For scripts and tests that keep running."""
+    _langfuse.flush()
+
+
+def shutdown_langfuse():
+    """Flush and stop background exporters. Call once at app shutdown."""
+    _langfuse.shutdown()

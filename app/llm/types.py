@@ -22,7 +22,7 @@ class LLMMessage(BaseModel):
 
 class LLMResponse(BaseModel):
     content: str | None = None
-    reasoning: str | None = None  # gpt-oss chain-of-thought; captured in traces
+    reasoning: str | None = None  # model's thinking when the provider returns it (Groq gpt-oss; not OpenAI Chat Completions)
     tool_calls: list[ToolCall] | None = None
     finish_reason: str  # 'stop' | 'tool_calls' | 'length'
     usage: dict  # {'prompt_tokens': int, 'completion_tokens': int, 'total_tokens': int}

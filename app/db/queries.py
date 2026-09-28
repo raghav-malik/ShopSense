@@ -6,9 +6,10 @@ from app.db.models import CartItem, Message, Session, new_id, now_iso
 
 # ---- Sessions ----
 
-async def create_session() -> Session:
+async def create_session(session_id: str | None = None) -> Session:
+    """Create a session. `session_id` is for tests and scripts; the API always generates one."""
     db = await get_db()
-    session = Session()
+    session = Session(id=session_id) if session_id else Session()
     await db.execute(
         "INSERT INTO sessions (id, created_at, updated_at) VALUES (?, ?, ?)",
         (session.id, session.created_at, session.updated_at),
