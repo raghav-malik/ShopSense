@@ -232,8 +232,87 @@ async def test_max_steps_forces_a_final_answer(session: Session, monkeypatch: py
     assert result.step_count == 2
     assert result.response == "From what I found, the boAt Airdopes 141 fits best."
     final = llm.agent_calls[-1]
-    assert final["name"] == "answer-at-step-limit" and final["tool_choice"] == "none"
+    assert final["name"] == "answer-at-limit" and final["tool_choice"] == "none"
     assert final["messages"][-1]["role"] == "system" and "research limit" in final["messages"][-1]["content"]
+
+
+def priced(response: LLMResponse, model: str = "gpt-6-luna") -> LLMResponse:
+    return response.model_copy(update={"model": model})
+
+
+async def test_token_budget_stops_research_and_answers(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "max_turn_tokens", 50_000)
+    llm = FakeLLM(
+        tool_calls(search_call("call_1"), tokens=30_000),
+        tool_calls(search_call("call_2", "earbuds ANC"), tokens=30_000),  # now over budget
+        answer("From what I found, the boAt Airdopes 141 fits best."),  # the final, tool-less call
+    )
+    result = await core.run_agent(session.id, "find earbuds", llm=llm, small_llm=llm)
+    assert result.step_count == 2  # a third research step never started
+    final = llm.agent_calls[-1]
+    assert final["name"] == "answer-at-limit" and final["tool_choice"] == "none"
+    assert "token budget" in final["trace_metadata"]["limit"]
+    assert result.response == "From what I found, the boAt Airdopes 141 fits best."
+    assert result.total_tokens == 30_000 + 30_000 + 200  # the final call counts too
+
+
+async def test_cost_budget_stops_research(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "max_turn_cost_usd", 0.01)
+    llm = FakeLLM(
+        priced(tool_calls(search_call("call_1"), tokens=5_000), model="gpt-6-astra"),  # ~$0.05
+        priced(answer("Here's what I found.")),
+    )
+    result = await core.run_agent(session.id, "find earbuds", llm=llm, small_llm=llm)
+    assert llm.agent_calls[-1]["name"] == "answer-at-limit"
+    assert "cost budget" in llm.agent_calls[-1]["trace_metadata"]["limit"]
+    assert result.estimated_cost_usd is not None and result.estimated_cost_usd > 0.01
+
+
+async def test_estimated_cost_is_reported(session: Session) -> None:
+    llm = FakeLLM(priced(tool_calls(search_call(), tokens=1_000)), priced(answer("Done.", tokens=1_000)))
+    result = await core.run_agent(session.id, "find earbuds", llm=llm, small_llm=llm)
+    # usage(): total-10 prompt tokens and 10 completion tokens per call
+    assert result.estimated_cost_usd == pytest.approx(2 * (990 * 0.10 + 10 * 0.50) / 1e6)
+
+
+async def test_unpriced_model_reports_no_cost(session: Session) -> None:
+    llm = FakeLLM(answer("Done."))  # model "fake" has no price
+    result = await core.run_agent(session.id, "hi", llm=llm, small_llm=llm)
+    assert result.estimated_cost_usd is None
+
+
+async def test_repeated_calls_are_not_run_again(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    searches: list[str] = []
+
+    def counting_search(query: str, max_results: int) -> list[JSONObject]:
+        searches.append(query)
+        return SEARCH_HITS[:max_results]
+
+    monkeypatch.setattr(search, "_ddgs_text", counting_search)
+    llm = FakeLLM(
+        tool_calls(search_call("call_1", "Noise Buds price")),
+        tool_calls(search_call("call_2", "noise buds  price")),  # same search, different case/spacing
+        answer("Noise Buds are ₹999."),
+    )
+    await core.run_agent(session.id, "noise buds price?", llm=llm, small_llm=llm)
+    assert searches == ["Noise Buds price"]  # ran once
+    repeated = json.loads(llm.agent_calls[2]["messages"][-1]["content"])
+    assert repeated["error"] == "repeated_call" and "step 1" in repeated["message"]
+
+
+async def test_identical_calls_in_one_step_run_once(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    searches: list[str] = []
+
+    def counting_search(query: str, max_results: int) -> list[JSONObject]:
+        searches.append(query)
+        return SEARCH_HITS[:max_results]
+
+    monkeypatch.setattr(search, "_ddgs_text", counting_search)
+    llm = FakeLLM(tool_calls(search_call("call_a", "earbuds"), search_call("call_b", "earbuds")), answer("Done."))
+    await core.run_agent(session.id, "earbuds", llm=llm, small_llm=llm)
+    assert len(searches) == 1
+    tool_msgs = [json.loads(m["content"]) for m in llm.agent_calls[1]["messages"] if m["role"] == "tool"]
+    assert "results" in tool_msgs[0] and tool_msgs[1]["error"] == "repeated_call"  # the first one ran
 
 
 async def test_max_steps_falls_back_to_results_if_final_call_fails(

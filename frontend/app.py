@@ -179,7 +179,9 @@ def render_assistant_extras(message: JSONObject, index: int) -> None:
     if meta and meta.get("trace_url"):
         with st.expander("🔍 Debug: Langfuse Trace"):
             st.write(f"[View trace]({meta['trace_url']})")
-            st.write(f"Steps: {meta['step_count']}, Tokens: {meta['total_tokens']}")
+            cost = meta.get("estimated_cost_usd")
+            cost_text = f", Est. cost: ${cost:.4f}" if cost is not None else ""
+            st.write(f"Steps: {meta['step_count']}, Tokens: {meta['total_tokens']}{cost_text}")
             st.write(f"Tools: {', '.join(meta['tool_calls_made']) or 'none'}")
 
 
@@ -288,7 +290,10 @@ if prompt:
                 "content": result["response"],
                 "products": products,
                 "products_cited": cited,
-                "meta": {k: result.get(k) for k in ("trace_url", "step_count", "total_tokens", "tool_calls_made")},
+                "meta": {
+                    k: result.get(k)
+                    for k in ("trace_url", "step_count", "total_tokens", "estimated_cost_usd", "tool_calls_made")
+                },
             }
         )
         st.session_state.fetch_suggestions = True

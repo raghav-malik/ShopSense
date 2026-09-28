@@ -59,7 +59,7 @@ class LLMResponse(BaseModel):
     reasoning: str | None = None  # model's thinking when returned (Groq gpt-oss; OpenAI Responses summaries)
     tool_calls: list[ToolCall] | None = None
     finish_reason: str  # 'stop' | 'tool_calls' | 'length'
-    usage: dict[str, int]  # prompt_tokens, completion_tokens, total_tokens
+    usage: dict[str, int]  # prompt_tokens, completion_tokens, total_tokens, cached_tokens (part of prompt)
     model: str
     # Opaque output items the provider needs back on the next call of this turn
     # (Responses API: reasoning items + function calls; Gemini: signed tool calls).

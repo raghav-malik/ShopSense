@@ -281,6 +281,8 @@ class ChatCompletionsAdapter(_OpenAISDKAdapter[ChatCompletion]):
                 "prompt_tokens": usage.prompt_tokens if usage else 0,
                 "completion_tokens": usage.completion_tokens if usage else 0,
                 "total_tokens": usage.total_tokens if usage else 0,
+                # Billed at a lower rate; the agent's cost estimate needs it.
+                "cached_tokens": _detail(usage, "prompt_tokens_details", "cached_tokens"),
             },
             model=response.model,
         )
@@ -445,6 +447,7 @@ class ResponsesAdapter(_OpenAISDKAdapter[Response]):
                 "prompt_tokens": usage.input_tokens if usage else 0,
                 "completion_tokens": usage.output_tokens if usage else 0,
                 "total_tokens": usage.total_tokens if usage else 0,
+                "cached_tokens": _detail(usage, "input_tokens_details", "cached_tokens"),
             },
             model=response.model,
             # Everything but the final text message: reasoning items and function
