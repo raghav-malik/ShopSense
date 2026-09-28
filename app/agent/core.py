@@ -32,6 +32,7 @@ from app.db.models import Message, MessageRow
 from app.llm.adapter import LLMAdapter, get_llm_adapter, get_small_llm_adapter
 from app.llm.errors import LLMError
 from app.llm.types import PROVIDER_ITEMS_KEY, ChatMessage, JSONObject, ToolCall
+from app.request_context import current_request_id
 from app.tools.registry import TOOL_MAP, execute_tool, get_tool_schemas
 
 # Importing this module creates the Langfuse client. Import order doesn't matter:
@@ -76,7 +77,7 @@ async def run_agent(
     langfuse.update_current_span(input=user_message)
 
     # Everything inside (generations, tools, suggestions) inherits the session.
-    with propagate_attributes(session_id=session_id, trace_name="run-agent"):
+    with propagate_attributes(session_id=session_id, trace_name="run-agent", metadata=_request_metadata()):
         result = await _run_agent(
             session_id, user_message, llm or get_llm_adapter(), small_llm or get_small_llm_adapter()
         )
@@ -250,6 +251,12 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
         total_tokens=budget.tokens,
         estimated_cost_usd=_cost(budget),
     )
+
+
+def _request_metadata() -> dict[str, str] | None:
+    """The HTTP request id on every observation, to match traces with log lines."""
+    request_id = current_request_id()
+    return {"request_id": request_id} if request_id else None
 
 
 def _cost(budget: TurnBudget) -> float | None:

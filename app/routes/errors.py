@@ -75,8 +75,5 @@ def register_error_handlers(app: FastAPI) -> None:
         details = [{"loc": list(e["loc"]), "msg": e["msg"], "type": e["type"]} for e in exc.errors()]
         return JSONResponse(_body("validation_error", "Request failed validation.", details), status_code=422)
 
-    @app.exception_handler(Exception)
-    async def unhandled_error(request: Request, exc: Exception) -> JSONResponse:
-        # Full detail goes to the server log; the client gets no internals.
-        logger.error("Unhandled error on %s %s", request.method, request.url.path, exc_info=exc)
-        return JSONResponse(_body("internal_error", "Something went wrong. Please try again."), status_code=500)
+    # Unhandled exceptions (500 internal_error) are handled in
+    # app.request_context.RequestContextMiddleware, where the request id is known.

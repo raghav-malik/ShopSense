@@ -10,6 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 LLMProvider = Literal["groq", "openai", "gemini"]
 LLMApi = Literal["chat_completions", "responses"]
+LogFormat = Literal["json", "text"]
 
 # Per-provider defaults: (base_url, model, reasoning_effort).
 # OpenAI's GPT-6 models reject function tools in Chat Completions unless
@@ -108,6 +109,9 @@ class Settings(BaseSettings):
 
     # Database
     db_path: str = Field(default="shopsense.db", description="SQLite database file path")
+
+    # Logging: JSON lines (one object per line, with the request id) or readable text for local work
+    log_format: LogFormat = Field(default="json", description="'json' (default) or 'text'")
 
     # Agent
     max_agent_steps: int = Field(default=10, description="Max ReAct iterations per turn (guardrail)")
