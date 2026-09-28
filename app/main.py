@@ -78,5 +78,6 @@ async def health() -> dict[str, Any]:
         "status": "ok",
         "service": "shopsense",
         "llm": f"{settings.llm_provider}/{settings.llm_model}",
+        "llm_small": f"{settings.llm_provider}/{settings.llm_small_model}",
         "langfuse_url": getattr(app.state, "langfuse_project_url", None) or settings.langfuse_base_url,
     }

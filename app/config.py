@@ -22,6 +22,16 @@ PROVIDER_DEFAULTS: dict[str, tuple[str, str, str | None]] = {
     "openai": ("https://api.openai.com/v1", "gpt-6-luna", "none"),
     "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai/", "gemini-3.8-flash", None),
 }
+# Model for side jobs that need no tools (follow-up suggestions): the cheapest
+# capable model per provider, as Airtap runs titles and suggestions on a small
+# model. On OpenAI that's the agent's default model: gpt-6-luna is the cheapest
+# current-generation model ($0.10 / $0.50 per 1M tokens in September 2026), so
+# the setting matters once the agent moves to a bigger model or to reasoning.
+SMALL_MODEL_DEFAULTS: dict[str, str] = {
+    "groq": "openai/gpt-oss-20b",
+    "openai": "gpt-6-luna",
+    "gemini": "gemini-3.5-flash-lite",
+}
 # The Responses API allows tools *with* reasoning. "medium" is OpenAI's default
 # and, in testing on gpt-6-luna, the lowest level that reliably produced
 # reasoning summaries ("low" often skipped reasoning on simple steps).
@@ -56,6 +66,10 @@ class Settings(BaseSettings):
     llm_model: str | None = Field(
         default=None,
         description="Model ID; defaults per provider (gpt-6-luna on OpenAI, gpt-oss-120b on Groq, gemini-3.8-flash on Gemini)",
+    )
+    llm_small_model: str | None = Field(
+        default=None,
+        description="Model for side jobs (follow-up suggestions); defaults per provider to its cheapest capable model",
     )
     llm_base_url: str | None = Field(default=None, description="OpenAI-compatible base URL; defaults per provider")
     llm_reasoning_effort: str | None = Field(
@@ -110,6 +124,7 @@ class Settings(BaseSettings):
             reasoning_effort = RESPONSES_DEFAULT_REASONING_EFFORT
         self.llm_base_url = self.llm_base_url or base_url
         self.llm_model = self.llm_model or model
+        self.llm_small_model = self.llm_small_model or SMALL_MODEL_DEFAULTS[self.llm_provider]
         self.llm_reasoning_effort = self.llm_reasoning_effort or reasoning_effort
 
         # Fail at startup rather than on the agent's first call.

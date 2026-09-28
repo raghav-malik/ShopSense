@@ -8,7 +8,7 @@ from openai import AsyncOpenAI, RateLimitError
 from openai.types.chat import ChatCompletion, ChatCompletionMessage, ChatCompletionMessageFunctionToolCall
 from openai.types.responses import Response, ResponseFunctionToolCall, ResponseReasoningItem
 
-from app.config import settings
+from app.config import PROVIDER_DEFAULTS, settings
 from app.llm.errors import LLMError, LLMRateLimitError, LLMTimeoutError, LLMUnavailableError
 from app.llm.types import (
     PROVIDER_ITEMS_KEY,
@@ -65,7 +65,8 @@ class _OpenAISDKAdapter[ResponseT](LLMAdapter):
 
     api_name: str
 
-    def __init__(self) -> None:
+    def __init__(self, *, model: str | None = None, reasoning_effort: str | None = None) -> None:
+        """`model` and `reasoning_effort` default to the configured agent model."""
         self.client = AsyncOpenAI(
             api_key=settings.llm_api_key,
             base_url=settings.llm_base_url,
@@ -76,8 +77,8 @@ class _OpenAISDKAdapter[ResponseT](LLMAdapter):
             # hung call would hold the request for 10 minutes.
             timeout=settings.llm_timeout,
         )
-        self.model = settings.llm_model
-        self.reasoning_effort = settings.llm_reasoning_effort
+        self.model = model or settings.llm_model
+        self.reasoning_effort = reasoning_effort or settings.llm_reasoning_effort
 
     # --- implemented per API ---
 
@@ -628,6 +629,18 @@ def get_llm_adapter() -> LLMAdapter:
     if settings.llm_api == "responses":
         return ResponsesAdapter()
     return ChatCompletionsAdapter()
+
+
+@lru_cache(maxsize=1)
+def get_small_llm_adapter() -> LLMAdapter:
+    """The adapter for side jobs that need no tools (LLM_SMALL_MODEL): always
+    Chat Completions, with the provider's default reasoning setting ("none" on
+    OpenAI) even when the agent itself reasons through the Responses API, so
+    side jobs stay fast and cheap."""
+    reasoning_effort = PROVIDER_DEFAULTS[settings.llm_provider][2]
+    if settings.llm_provider == "gemini":
+        return GeminiAdapter(model=settings.llm_small_model, reasoning_effort=reasoning_effort)
+    return ChatCompletionsAdapter(model=settings.llm_small_model, reasoning_effort=reasoning_effort)
 
 
 if __name__ == "__main__":

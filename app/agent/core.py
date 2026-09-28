@@ -27,9 +27,9 @@ from app.agent.suggestions import generate_suggestions
 from app.config import settings
 from app.db import queries
 from app.db.models import Message, MessageRow
-from app.llm.adapter import LLMAdapter, get_llm_adapter
+from app.llm.adapter import LLMAdapter, get_llm_adapter, get_small_llm_adapter
 from app.llm.errors import LLMError
-from app.llm.types import PROVIDER_ITEMS_KEY, ChatMessage, JSONObject
+from app.llm.types import PROVIDER_ITEMS_KEY, ChatMessage, JSONObject, ToolCall
 from app.tools.registry import TOOL_MAP, execute_tool, get_tool_schemas
 
 # Importing this module creates the Langfuse client. Import order doesn't matter:
@@ -52,6 +52,7 @@ async def run_agent(
     user_message: str,
     *,
     llm: LLMAdapter | None = None,
+    small_llm: LLMAdapter | None = None,
     langfuse_trace_id: str | None = None,
 ) -> AgentResponse:
     """
@@ -61,8 +62,9 @@ async def run_agent(
     3. Loop: LLM call → tool dispatch → observe → repeat until done
     4. Return final response with metadata
 
-    `llm` defaults to the configured provider; tests pass a fake. The agent's
-    only dependency on a model is this argument.
+    `llm` (the agent's model, LLM_MODEL) and `small_llm` (side jobs such as
+    suggestions, LLM_SMALL_MODEL) default to the configured provider; tests pass
+    fakes. These arguments are the agent's only dependency on a model.
     `langfuse_trace_id` is consumed by @observe (it sets this run's trace id, so
     a caller can link to the trace even if the run fails); it never reaches the body.
     """
@@ -71,7 +73,9 @@ async def run_agent(
 
     # Everything inside (generations, tools, suggestions) inherits the session.
     with propagate_attributes(session_id=session_id, trace_name="run-agent"):
-        result = await _run_agent(session_id, user_message, llm or get_llm_adapter())
+        result = await _run_agent(
+            session_id, user_message, llm or get_llm_adapter(), small_llm or get_small_llm_adapter()
+        )
 
     langfuse.update_current_span(
         output=result.response,
@@ -85,7 +89,7 @@ async def run_agent(
     return result
 
 
-async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter) -> AgentResponse:
+async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_llm: LLMAdapter) -> AgentResponse:
     # 1. Load session context
     session = await queries.get_session(session_id)
     if not session:
@@ -151,7 +155,7 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter) -> Age
             messages.append({"role": "assistant", "content": final_text})
 
             # Generate follow-on suggestions (best-effort, from Airtap pattern)
-            suggestions = await generate_suggestions(messages, llm)
+            suggestions = await generate_suggestions(messages, small_llm)
 
             return AgentResponse(
                 response=final_text,
@@ -183,13 +187,11 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter) -> Age
             assistant_msg[PROVIDER_ITEMS_KEY] = response.provider_items
         messages.append(assistant_msg)
 
-        for tc in response.tool_calls:
+        # Same step number as the generation that requested them.
+        results = await _execute_tool_calls(response.tool_calls, session_id, step_count)
+        for tc, result in zip(response.tool_calls, results, strict=True):
             tool_name = tc.function.name
             tools_called.append(tool_name)
-
-            # Execute the tool
-            # Same step number as the generation that requested it.
-            result = await _execute_tool_traced(tool_name, tc.function.arguments, session_id, step_count)
 
             # Track products found
             if tool_name == "search_products":
@@ -235,7 +237,7 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter) -> Age
         response=final_text,
         tool_calls_made=tools_called,
         products_found=products_found,
-        suggestions=await generate_suggestions(messages, llm),
+        suggestions=await generate_suggestions(messages, small_llm),
         trace_url=await _current_trace_url(),
         step_count=step_count,
         total_tokens=total_tokens,
@@ -301,6 +303,38 @@ def _replay_history(history: list[MessageRow]) -> list[ChatMessage]:
     while turns and turns[0]["role"] != "user":
         turns.pop(0)
     return turns
+
+
+# Tools that only read the web (no session state) can run at the same time,
+# bounded like Airtap's parallel batches. The others (cart, preferences) run one
+# at a time in the order the model asked for them, so a cart change and a cart
+# view in the same step see each other.
+CONCURRENT_TOOLS = frozenset({"search_products", "extract_product_info", "compare_products"})
+MAX_CONCURRENT_TOOLS = 4
+
+
+async def _execute_tool_calls(tool_calls: list[ToolCall], session_id: str, step: int) -> list[str]:
+    """Run one step's tool calls; results come back in the order of `tool_calls`."""
+    results: dict[int, str] = {}
+    limit = asyncio.Semaphore(MAX_CONCURRENT_TOOLS)
+
+    async def run(index: int, call: ToolCall) -> None:
+        results[index] = await _execute_tool_traced(call.function.name, call.function.arguments, session_id, step)
+
+    async def run_concurrently(index: int, call: ToolCall) -> None:
+        async with limit:
+            await run(index, call)
+
+    async def run_in_order() -> None:
+        for index, call in enumerate(tool_calls):
+            if call.function.name not in CONCURRENT_TOOLS:
+                await run(index, call)
+
+    await asyncio.gather(
+        run_in_order(),
+        *(run_concurrently(i, call) for i, call in enumerate(tool_calls) if call.function.name in CONCURRENT_TOOLS),
+    )
+    return [results[i] for i in range(len(tool_calls))]
 
 
 async def _execute_tool_traced(name: str, arguments: str, session_id: str, step: int) -> str:

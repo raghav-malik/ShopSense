@@ -184,3 +184,47 @@ def test_responses_request_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     tool = kwargs["tools"][0]
     assert set(tool) == {"type", "name", "description", "parameters", "strict"} and tool["strict"] is False
     assert kwargs["tool_choice"] == "none"
+
+
+# ---- side-job model (LLM_SMALL_MODEL) ----
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected_model"),
+    [("openai", "gpt-6-luna"), ("groq", "openai/gpt-oss-20b"), ("gemini", "gemini-3.5-flash-lite")],
+)
+def test_small_model_defaults_per_provider(provider: str, expected_model: str) -> None:
+    keys = {"openai_api_key": "sk-test", "groq_api_key": "gsk-test", "gemini_api_key": "AIza-test"}
+    assert Settings(llm_provider=provider, **keys).llm_small_model == expected_model  # type: ignore[arg-type]
+
+
+def test_small_model_can_be_overridden() -> None:
+    assert Settings(llm_small_model="gpt-5-nano").llm_small_model == "gpt-5-nano"
+
+
+@pytest.mark.parametrize(
+    ("provider", "api", "expected"),
+    [
+        ("openai", "chat_completions", ChatCompletionsAdapter),
+        # Side jobs stay on fast Chat Completions even when the agent reasons via Responses.
+        ("openai", "responses", ChatCompletionsAdapter),
+        ("gemini", "chat_completions", GeminiAdapter),
+    ],
+)
+def test_small_adapter_uses_the_small_model_without_reasoning(
+    monkeypatch: pytest.MonkeyPatch, provider: str, api: str, expected: type[LLMAdapter]
+) -> None:
+    monkeypatch.setattr(settings, "llm_provider", provider)
+    monkeypatch.setattr(settings, "llm_api", api)
+    monkeypatch.setattr(settings, "gemini_api_key", "AIza-test")
+    monkeypatch.setattr(settings, "llm_small_model", "small-model")
+    monkeypatch.setattr(settings, "llm_reasoning_effort", "medium")  # the agent's setting
+    adapter_module.get_small_llm_adapter.cache_clear()
+    try:
+        adapter = adapter_module.get_small_llm_adapter()
+    finally:
+        adapter_module.get_small_llm_adapter.cache_clear()
+    assert type(adapter) is expected
+    assert isinstance(adapter, ChatCompletionsAdapter) and adapter.model == "small-model"
+    # OpenAI: "none"; Gemini has no off switch, so its default (None) falls back to the configured value.
+    assert adapter.reasoning_effort == ("none" if provider == "openai" else "medium")
