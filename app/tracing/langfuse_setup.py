@@ -7,9 +7,10 @@ Import this module before anything traced.
 """
 
 import re
+from collections.abc import Mapping
 
 from langfuse import Langfuse
-from langfuse.types import MaskOtelSpansParams, MaskOtelSpansResult, OtelSpanPatch
+from langfuse.types import MaskOtelSpansParams, MaskOtelSpansResult, OtelSpanIdentifier, OtelSpanPatch
 
 from app.config import settings
 
@@ -32,13 +33,17 @@ def _redact(text: str) -> str:
 
 
 def mask_otel_spans(*, params: MaskOtelSpansParams) -> MaskOtelSpansResult | None:
-    patches = {}
+    patches: dict[OtelSpanIdentifier, OtelSpanPatch] = {}
     for identifier, span in params.spans.items():
-        replacements = {
-            key: masked
-            for key, value in span.attributes.items()
-            if isinstance(value, str) and (masked := _redact(value)) != value
-        }
+        replacements: dict[str, str] = {}
+        # OpenTelemetry declares AttributeValue with a chained assignment
+        # (`AnyValue = AttributeValue = str | ...`), which type checkers can't read
+        # as an alias; `object` is the honest type here. Values can be text,
+        # numbers, booleans or sequences, and only text can hold PII.
+        attributes: Mapping[str, object] = span.attributes
+        for key, value in attributes.items():
+            if isinstance(value, str) and (masked := _redact(value)) != value:
+                replacements[key] = masked
         if replacements:
             patches[identifier] = OtelSpanPatch(set_attributes=replacements)
     return MaskOtelSpansResult(span_patches=patches) if patches else None
@@ -60,11 +65,11 @@ def get_langfuse() -> Langfuse:
     return _langfuse
 
 
-def flush_langfuse():
+def flush_langfuse() -> None:
     """Send buffered traces now. For scripts and tests that keep running."""
     _langfuse.flush()
 
 
-def shutdown_langfuse():
+def shutdown_langfuse() -> None:
     """Flush and stop background exporters. Call once at app shutdown."""
     _langfuse.shutdown()

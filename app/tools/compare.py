@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 
+from app.llm.types import JSONObject
 from app.tools.base import pydantic_to_tool_schema
 
 
@@ -35,7 +36,7 @@ COMPARE_SCHEMA = pydantic_to_tool_schema(
 )
 
 
-async def compare_products(products: list[dict]) -> dict:
+async def compare_products(products: list[JSONObject]) -> JSONObject:
     """
     Build a structured comparison from a list of products.
     Pure function — no external calls.
@@ -73,6 +74,6 @@ async def compare_products(products: list[dict]) -> dict:
     }
 
 
-def _cell(value) -> str:
+def _cell(value: object) -> str:
     """Escape pipes so a product name like 'Buds | 2024' doesn't split the table row."""
     return str(value).replace("|", "\\|")

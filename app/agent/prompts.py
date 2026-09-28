@@ -1,7 +1,10 @@
 import json
+from typing import Any
+
+from app.db.models import CartItemRow
 
 
-def build_system_prompt(preferences: dict, cart: list[dict], budget: float | None = None) -> str:
+def build_system_prompt(preferences: dict[str, Any], cart: list[CartItemRow], budget: float | None = None) -> str:
     """
     Assemble the system prompt from five parts:
     1. Identity — who the agent is

@@ -6,6 +6,7 @@ from ddgs.exceptions import DDGSException, RatelimitException, TimeoutException
 from pydantic import BaseModel, Field
 
 from app.config import settings
+from app.llm.types import JSONObject
 from app.tools.base import pydantic_to_tool_schema
 
 # ShopSense prices in INR, so bias results toward Indian stores (ddgs defaults to us-en).
@@ -46,7 +47,7 @@ SEARCH_SCHEMA = pydantic_to_tool_schema(
 )
 
 
-async def search_products(query: str, max_results: int = settings.max_search_results) -> dict:
+async def search_products(query: str, max_results: int = settings.max_search_results) -> JSONObject:
     """
     Search DuckDuckGo for products. Returns structured results.
 
@@ -124,16 +125,18 @@ def _truncate(text: str, limit: int) -> str:
     return text[:limit].rsplit(" ", 1)[0] + " …"
 
 
-def _ddgs_text(query: str, max_results: int) -> list[dict]:
+def _ddgs_text(query: str, max_results: int) -> list[JSONObject]:
     with DDGS() as ddgs:
         return ddgs.text(query, region=SEARCH_REGION, max_results=max_results)
 
 
 if __name__ == "__main__":
     # Smoke test. From the project root:  python -m app.tools.search
+    import io
     import json
     import sys
 
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     print(json.dumps(SEARCH_SCHEMA, indent=2))
     print(json.dumps(asyncio.run(search_products("wireless earbuds under 3000 INR")), indent=2, ensure_ascii=False))

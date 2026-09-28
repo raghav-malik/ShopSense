@@ -8,6 +8,7 @@ run add `trace_url`, the Langfuse trace of the failed turn.
 """
 
 import logging
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -15,13 +16,15 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.llm.types import JSONObject
+
 logger = logging.getLogger("shopsense.api")
 
 
 class ErrorBody(BaseModel):
     code: str
     message: str
-    details: list[dict] | None = None
+    details: list[JSONObject] | None = None
     trace_url: str | None = None
 
 
@@ -40,14 +43,14 @@ def api_error(
     headers: dict[str, str] | None = None,
 ) -> HTTPException:
     """Raise with: `raise api_error(404, "session_not_found", "...")`."""
-    detail = {"code": code, "message": message}
+    detail: dict[str, str] = {"code": code, "message": message}
     if trace_url:
         detail["trace_url"] = trace_url
     return HTTPException(status_code=status_code, detail=detail, headers=headers)
 
 
-def _body(code: str, message: str, details: list[dict] | None = None, trace_url: str | None = None) -> dict:
-    error = {"code": code, "message": message}
+def _body(code: str, message: str, details: list[JSONObject] | None = None, trace_url: str | None = None) -> JSONObject:
+    error: dict[str, Any] = {"code": code, "message": message}
     if details is not None:
         error["details"] = details
     if trace_url:
@@ -58,8 +61,10 @@ def _body(code: str, message: str, details: list[dict] | None = None, trace_url:
 def register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(StarletteHTTPException)
     async def http_error(_: Request, exc: StarletteHTTPException) -> JSONResponse:
-        if isinstance(exc.detail, dict) and {"code", "message"} <= exc.detail.keys():
-            body = _body(exc.detail["code"], exc.detail["message"], trace_url=exc.detail.get("trace_url"))
+        # Starlette types `detail` as str; api_error() puts a dict there (FastAPI allows any JSON).
+        detail: object = exc.detail
+        if isinstance(detail, dict) and {"code", "message"} <= detail.keys():
+            body = _body(detail["code"], detail["message"], trace_url=detail.get("trace_url"))
         else:
             # Framework-raised errors (404 unknown route, 405 wrong method, ...)
             body = _body(f"http_{exc.status_code}", str(exc.detail))

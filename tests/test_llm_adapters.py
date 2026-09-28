@@ -11,33 +11,35 @@ from app.config import Settings, settings
 from app.llm.adapter import (
     ChatCompletionsAdapter,
     GeminiAdapter,
+    LLMAdapter,
     ResponsesAdapter,
     _messages_to_responses_input,
 )
-from app.llm.types import PROVIDER_ITEMS_KEY
+from app.llm.types import PROVIDER_ITEMS_KEY, ChatMessage, ChatToolCall, JSONObject
 from app.tools.registry import get_tool_schemas
 
-SIGNED_TOOL_CALL = {
+TOOL_CALL: ChatToolCall = {
     "id": "call_1",
     "type": "function",
     "function": {"name": "search_products", "arguments": '{"reasoning":"r","query":"earbuds"}'},
-    "extra_content": {"google": {"thought_signature": "SIG_abc123"}},
 }
+# The same call as Gemini returns it: with a thought signature to replay.
+SIGNED_TOOL_CALL: JSONObject = {**TOOL_CALL, "extra_content": {"google": {"thought_signature": "SIG_abc123"}}}
 
-HISTORY = [
+HISTORY: list[ChatMessage] = [
     {"role": "system", "content": "SYSTEM PROMPT"},
     {"role": "user", "content": "earbuds under 3000"},
     {
         "role": "assistant",
         "content": None,
-        "tool_calls": [{k: v for k, v in SIGNED_TOOL_CALL.items() if k != "extra_content"}],
+        "tool_calls": [TOOL_CALL],
         PROVIDER_ITEMS_KEY: [SIGNED_TOOL_CALL],
     },
     {"role": "tool", "tool_call_id": "call_1", "content": '{"results": []}'},
 ]
 
 
-def gemini_completion(tool_calls=None, content=None) -> ChatCompletion:
+def gemini_completion(tool_calls: list[JSONObject] | None = None, content: str | None = None) -> ChatCompletion:
     """A Chat Completions response as Gemini's OpenAI-compatible endpoint returns it."""
     return ChatCompletion.model_validate(
         {
@@ -60,7 +62,7 @@ def gemini_completion(tool_calls=None, content=None) -> ChatCompletion:
 # ---- config ----
 
 
-def test_gemini_provider_defaults():
+def test_gemini_provider_defaults() -> None:
     s = Settings(llm_provider="gemini", gemini_api_key="AIza-test")
     assert s.llm_model == "gemini-3.8-flash"
     assert s.llm_base_url == "https://generativelanguage.googleapis.com/v1beta/openai/"
@@ -68,14 +70,14 @@ def test_gemini_provider_defaults():
     assert s.llm_api_key == "AIza-test"
 
 
-def test_gemini_requires_its_key(monkeypatch):
+def test_gemini_requires_its_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     with pytest.raises(ValidationError, match="GEMINI_API_KEY is required"):
         Settings(_env_file=None, llm_provider="gemini")
 
 
-def test_google_api_key_alias(monkeypatch):
+def test_google_api_key_alias(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GOOGLE_API_KEY", "AIza-from-alias")
     assert Settings(llm_provider="gemini").llm_api_key == "AIza-from-alias"
 
@@ -88,7 +90,9 @@ def test_google_api_key_alias(monkeypatch):
         ("gemini", "chat_completions", GeminiAdapter),
     ],
 )
-def test_get_llm_adapter_picks_by_config(monkeypatch, provider, api, expected):
+def test_get_llm_adapter_picks_by_config(
+    monkeypatch: pytest.MonkeyPatch, provider: str, api: str, expected: type[LLMAdapter]
+) -> None:
     monkeypatch.setattr(settings, "llm_provider", provider)
     monkeypatch.setattr(settings, "llm_api", api)
     monkeypatch.setattr(settings, "gemini_api_key", "AIza-test")
@@ -102,7 +106,7 @@ def test_get_llm_adapter_picks_by_config(monkeypatch, provider, api, expected):
 # ---- Gemini ----
 
 
-def test_gemini_request_replays_thought_signatures_and_omits_temperature():
+def test_gemini_request_replays_thought_signatures_and_omits_temperature() -> None:
     kwargs = GeminiAdapter()._build_request(HISTORY, get_tool_schemas(), "auto")
     assistant = kwargs["messages"][2]
     # The tool call goes back exactly as Gemini sent it, signature included.
@@ -112,28 +116,30 @@ def test_gemini_request_replays_thought_signatures_and_omits_temperature():
     assert kwargs["tools"] and kwargs["tool_choice"] == "auto"
 
 
-def test_gemini_response_keeps_full_tool_calls_as_provider_items():
+def test_gemini_response_keeps_full_tool_calls_as_provider_items() -> None:
     response = GeminiAdapter()._to_llm_response(gemini_completion(tool_calls=[SIGNED_TOOL_CALL]))
     assert response.finish_reason == "tool_calls"
+    assert response.tool_calls and response.provider_items
     assert response.tool_calls[0].id == "call_1"
     assert response.provider_items[0]["extra_content"] == {"google": {"thought_signature": "SIG_abc123"}}
 
 
-def test_gemini_counts_hidden_thinking_tokens_as_reasoning():
+def test_gemini_counts_hidden_thinking_tokens_as_reasoning() -> None:
     # Real shape from Gemini's OpenAI endpoint: thinking only appears in total_tokens.
     completion = gemini_completion(content="Neither; both weigh a kilogram.")
+    assert completion.usage is not None
     completion.usage.prompt_tokens, completion.usage.completion_tokens, completion.usage.total_tokens = 18, 11, 227
     buckets = GeminiAdapter()._success_update({"model": "gemini-3.8-flash"}, completion)["usage_details"]
     assert buckets == {"input": 18, "output": 11, "output_reasoning_tokens": 198, "total": 227}
     assert buckets["input"] + buckets["output"] + buckets["output_reasoning_tokens"] == buckets["total"]
 
 
-def test_gemini_text_response_has_no_provider_items():
+def test_gemini_text_response_has_no_provider_items() -> None:
     response = GeminiAdapter()._to_llm_response(gemini_completion(content="Here you go."))
     assert response.content == "Here you go." and response.provider_items is None
 
 
-def test_chat_completions_strips_provider_items_and_sets_temperature():
+def test_chat_completions_strips_provider_items_and_sets_temperature() -> None:
     kwargs = ChatCompletionsAdapter()._build_request(HISTORY, None, "auto")
     assert all(PROVIDER_ITEMS_KEY not in m for m in kwargs["messages"])
     assert "extra_content" not in kwargs["messages"][2]["tool_calls"][0]
@@ -144,13 +150,13 @@ def test_chat_completions_strips_provider_items_and_sets_temperature():
 # ---- Responses API ----
 
 
-def test_responses_input_conversion():
-    reasoning = {"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "ENC"}
-    call = {"type": "function_call", "call_id": "call_1", "name": "search_products", "arguments": "{}"}
-    messages = [
+def test_responses_input_conversion() -> None:
+    reasoning: JSONObject = {"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "ENC"}
+    call: JSONObject = {"type": "function_call", "call_id": "call_1", "name": "search_products", "arguments": "{}"}
+    messages: list[ChatMessage] = [
         {"role": "system", "content": "SYSTEM PROMPT"},
         {"role": "user", "content": "earbuds"},
-        {"role": "assistant", "content": None, "tool_calls": [SIGNED_TOOL_CALL], PROVIDER_ITEMS_KEY: [reasoning, call]},
+        {"role": "assistant", "content": None, "tool_calls": [TOOL_CALL], PROVIDER_ITEMS_KEY: [reasoning, call]},
         {"role": "tool", "tool_call_id": "call_1", "content": "{}"},
         {"role": "assistant", "content": "Here are two."},
         {"role": "system", "content": "STEP LIMIT NOTE"},
@@ -167,7 +173,7 @@ def test_responses_input_conversion():
     ]
 
 
-def test_responses_request_shape(monkeypatch):
+def test_responses_request_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "llm_reasoning_effort", "medium")
     adapter = ResponsesAdapter()
     adapter.reasoning_effort = "medium"

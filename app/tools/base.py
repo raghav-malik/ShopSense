@@ -1,11 +1,13 @@
 from pydantic import BaseModel
 
+from app.llm.types import JSONObject
+
 
 def pydantic_to_tool_schema(
     name: str,
     description: str,
     input_model: type[BaseModel],
-) -> dict:
+) -> JSONObject:
     """
     Build an OpenAI-compatible tool schema from a Pydantic model.
 

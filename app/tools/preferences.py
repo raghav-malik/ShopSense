@@ -1,9 +1,10 @@
 import json
-from typing import Literal
+from typing import Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
 
 from app.db import queries
+from app.llm.types import JSONObject
 from app.tools.base import pydantic_to_tool_schema
 
 
@@ -28,7 +29,7 @@ class PreferencesInput(BaseModel):
     )
 
     @model_validator(mode="after")
-    def check_set_fields(self):
+    def check_set_fields(self) -> Self:
         if self.action == "set" and (not self.key or self.value is None):
             raise ValueError("key and value are required when action is 'set'")
         return self
@@ -45,7 +46,7 @@ async def handle_preferences(
     action: str,
     key: str | None = None,
     value: str | None = None,
-) -> dict:
+) -> JSONObject:
     """Read or update user preferences."""
 
     if action == "get":
@@ -57,7 +58,7 @@ async def handle_preferences(
             return {"error": "key and value are required for set"}
         # The LLM sometimes sends a bare string ("Samsung") instead of JSON.
         try:
-            parsed_value = json.loads(value) if isinstance(value, str) else value
+            parsed_value = json.loads(value)
         except json.JSONDecodeError:
             parsed_value = value
         await queries.set_preference(key, parsed_value)

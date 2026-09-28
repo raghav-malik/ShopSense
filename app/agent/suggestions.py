@@ -1,6 +1,7 @@
 import re
 
-from app.llm.adapter import get_llm_adapter
+from app.llm.adapter import LLMAdapter
+from app.llm.types import ChatMessage
 
 SUGGESTIONS_SYSTEM_PROMPT = """You are a follow-up suggestion generator for a shopping assistant.
 Given the conversation so far, generate 2-3 concise follow-up suggestions the user is likely to send next.
@@ -20,18 +21,17 @@ Bad examples: "Would you like to see more?", "How can I help?", "Let me know if 
 _LIST_MARKER = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s*")
 
 
-async def generate_suggestions(conversation_messages: list[dict]) -> list[str]:
+async def generate_suggestions(conversation_messages: list[ChatMessage], llm: LLMAdapter) -> list[str]:
     """
     Generate 2-3 follow-on suggestions based on conversation context.
-    Uses the same LLM but with a minimal prompt. Fails silently — suggestions
+    Uses the agent's LLM with a minimal prompt. Fails silently — suggestions
     are a UX enhancement, never a blocker.
 
     Traced as its own `generate-suggestions` generation inside the agent's trace
     (a failure still shows there, with level ERROR).
     """
     try:
-        llm = get_llm_adapter()
-        messages = [
+        messages: list[ChatMessage] = [
             {"role": "system", "content": SUGGESTIONS_SYSTEM_PROMPT},
             {"role": "user", "content": _format_conversation_for_suggestions(conversation_messages)},
         ]
@@ -52,14 +52,13 @@ async def generate_suggestions(conversation_messages: list[dict]) -> list[str]:
         return []
 
 
-def _format_conversation_for_suggestions(messages: list[dict]) -> str:
+def _format_conversation_for_suggestions(messages: list[ChatMessage]) -> str:
     """Format the last few messages for the suggestion prompt."""
     # Only send the last 6 messages to keep it cheap
     recent = messages[-6:] if len(messages) > 6 else messages
     lines = []
     for m in recent:
-        role = m.get("role", "unknown")
-        content = m.get("content", "")
+        role, content = m["role"], m["content"]
         if role in ("user", "assistant") and content:
             lines.append(f"{role.capitalize()}: {content[:300]}")
     return "\n".join(lines)

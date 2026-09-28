@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from app.agent.core import run_agent
 from app.agent.schemas import AgentResponse
 from app.db import queries
-from app.db.models import Session
+from app.db.models import MessageRow, Session
 from app.llm.errors import LLMError, LLMRateLimitError, LLMTimeoutError, LLMUnavailableError
 from app.routes.errors import ErrorResponse, api_error
 from app.tracing.langfuse_setup import get_langfuse
@@ -44,7 +44,6 @@ async def _require_session(session_id: str) -> Session:
 
 @router.post(
     "/chat",
-    response_model=AgentResponse,
     responses={
         400: {"model": ErrorResponse, "description": "Empty message"},
         500: {"model": ErrorResponse, "description": "Unexpected server error (with trace_url)"},
@@ -53,7 +52,7 @@ async def _require_session(session_id: str) -> Session:
         504: {"model": ErrorResponse, "description": "The LLM didn't respond in time"},
     },
 )
-async def chat(session_id: str, request: ChatRequest):
+async def chat(session_id: str, request: ChatRequest) -> AgentResponse:
     """Send a message and get the agent's response."""
     await _require_session(session_id)
 
@@ -102,29 +101,35 @@ class CartResponse(BaseModel):
     currency: str = "INR"
 
 
-@router.get("/cart", response_model=CartResponse)
-async def get_cart(session_id: str):
+@router.get("/cart")
+async def get_cart(session_id: str) -> CartResponse:
     """Get the current cart for a session."""
     await _require_session(session_id)
 
     cart = await queries.get_cart(session_id)
     items = [CartItemOut(product_name=i["product_name"], price=i["price"], url=i["url"]) for i in cart]
-    total = sum(i.get("price", 0) or 0 for i in cart)
+    total = sum(i["price"] or 0 for i in cart)
     return CartResponse(items=items, total=total)
 
 
+class SessionInfo(BaseModel):
+    id: str
+    created_at: str
+    budget: float | None
+
+
 class HistoryResponse(BaseModel):
-    messages: list[dict]
-    session: dict
+    messages: list[MessageRow]
+    session: SessionInfo
 
 
-@router.get("/history", response_model=HistoryResponse)
-async def get_history(session_id: str):
+@router.get("/history")
+async def get_history(session_id: str) -> HistoryResponse:
     """Get conversation history for a session."""
     session = await _require_session(session_id)
 
     messages = await queries.get_messages(session_id)
     return HistoryResponse(
         messages=messages,
-        session={"id": session.id, "created_at": session.created_at, "budget": session.budget},
+        session=SessionInfo(id=session.id, created_at=session.created_at, budget=session.budget),
     )

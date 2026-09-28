@@ -4,6 +4,7 @@ Run:  streamlit run frontend/app.py   (backend: uvicorn app.main:app --port 8000
 """
 
 import os
+from typing import Any
 
 import httpx
 import streamlit as st
@@ -13,6 +14,9 @@ API_BASE = os.getenv("SHOPSENSE_API_URL", "http://localhost:8000")
 # 10 steps worst case), so the spec's 60s timeout cut off slow-but-healthy turns.
 CHAT_TIMEOUT = 180.0
 MAX_PRODUCT_CARDS = 3
+
+# The backend's JSON bodies. The UI reads them as plain dicts, like the API returns them.
+type JSONObject = dict[str, Any]
 
 st.set_page_config(page_title="ShopSense", page_icon="🛍️", layout="wide")
 
@@ -27,7 +31,7 @@ class ApiError(Exception):
         self.trace_url = trace_url
 
 
-def _call(method: str, path: str, *, timeout: float = 15.0, **kwargs) -> dict:
+def _call(method: str, path: str, *, timeout: float = 15.0, **kwargs: Any) -> JSONObject:
     try:
         response = httpx.request(method, f"{API_BASE}{path}", timeout=timeout, **kwargs)
     except httpx.ConnectError as e:
@@ -45,30 +49,32 @@ def _call(method: str, path: str, *, timeout: float = 15.0, **kwargs) -> dict:
         except (ValueError, KeyError, TypeError) as e:
             raise ApiError(f"API error {response.status_code}", f"http_{response.status_code}") from e
         raise ApiError(message, code, error.get("trace_url"))
-    return response.json()
+    body: JSONObject = response.json()
+    return body
 
 
 def create_session() -> str:
     """Create a new session via the API."""
-    return _call("POST", "/sessions")["session_id"]
+    session_id: str = _call("POST", "/sessions")["session_id"]
+    return session_id
 
 
-def send_message(session_id: str, message: str) -> dict:
+def send_message(session_id: str, message: str) -> JSONObject:
     """Send a message to the agent."""
     return _call("POST", f"/sessions/{session_id}/chat", json={"message": message}, timeout=CHAT_TIMEOUT)
 
 
-def get_cart(session_id: str) -> dict:
+def get_cart(session_id: str) -> JSONObject:
     """Fetch current cart."""
     return _call("GET", f"/sessions/{session_id}/cart")
 
 
-def get_history(session_id: str) -> dict:
+def get_history(session_id: str) -> JSONObject:
     return _call("GET", f"/sessions/{session_id}/history")
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_backend_info() -> dict | None:
+def get_backend_info() -> JSONObject | None:
     """Model name and Langfuse dashboard link, as configured on the backend."""
     try:
         return _call("GET", "/health", timeout=5.0)
@@ -79,7 +85,7 @@ def get_backend_info() -> dict | None:
 # ---- Session state ----
 
 
-def start_session(session_id: str, messages: list[dict] | None = None) -> None:
+def start_session(session_id: str, messages: list[JSONObject] | None = None) -> None:
     st.session_state.session_id = session_id
     st.session_state.messages = messages or []
     st.session_state.suggestions = []
@@ -121,7 +127,7 @@ session_id = st.session_state.session_id
 # ---- Rendering helpers ----
 
 
-def pick_product_cards(result: dict) -> tuple[list[dict], bool]:
+def pick_product_cards(result: JSONObject) -> tuple[list[JSONObject], bool]:
     """Cards for the products the agent actually linked in its answer.
 
     products_found holds every search result (often roundup articles), so
@@ -147,7 +153,7 @@ def _short(text: str, limit: int = 90) -> str:
     return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + " …"
 
 
-def render_assistant_extras(message: dict, index: int) -> None:
+def render_assistant_extras(message: JSONObject, index: int) -> None:
     for n, product in enumerate(message.get("products", [])):
         icon = "🛒" if message.get("products_cited") else "🔎"
         with st.expander(f"{icon} {_short(product.get('title') or 'Product')}"):
@@ -168,7 +174,7 @@ def render_assistant_extras(message: dict, index: int) -> None:
             st.write(f"Tools: {', '.join(meta['tool_calls_made']) or 'none'}")
 
 
-def render_message(message: dict, index: int) -> None:
+def render_message(message: JSONObject, index: int) -> None:
     with st.chat_message(message["role"]):
         if message.get("error"):
             st.error(message["content"])
@@ -250,6 +256,7 @@ if prompt:
     render_message(user_message, len(st.session_state.messages) - 1)
 
     with st.chat_message("assistant"), st.spinner("Searching and analyzing..."):
+        result: JSONObject | None
         try:
             result = send_message(session_id, prompt)
         except ApiError as e:

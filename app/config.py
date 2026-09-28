@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -45,7 +45,10 @@ class Settings(BaseSettings):
     openai_api_key: str | None = Field(
         default=None, description="OpenAI API key from platform.openai.com (required when LLM_PROVIDER=openai)"
     )
-    gemini_api_key: str | None = Field(
+    # AliasChoices: accepted names in the environment. The Pydantic mypy plugin
+    # can't check aliased fields in __init__, but Settings is only ever filled
+    # from the environment, so that check doesn't apply here.
+    gemini_api_key: str | None = Field(  # type: ignore[pydantic-alias]
         default=None,
         validation_alias=AliasChoices("GEMINI_API_KEY", "GOOGLE_API_KEY"),
         description="Gemini API key from aistudio.google.com (required when LLM_PROVIDER=gemini)",
@@ -67,7 +70,7 @@ class Settings(BaseSettings):
     # Langfuse
     langfuse_public_key: str = Field(..., description="Langfuse public key")
     langfuse_secret_key: str = Field(..., description="Langfuse secret key")
-    langfuse_base_url: str = Field(
+    langfuse_base_url: str = Field(  # type: ignore[pydantic-alias]  # see gemini_api_key
         default="https://cloud.langfuse.com",
         # Current SDK name is LANGFUSE_BASE_URL; LANGFUSE_HOST is the legacy one.
         validation_alias=AliasChoices("LANGFUSE_BASE_URL", "LANGFUSE_HOST"),
@@ -101,7 +104,7 @@ class Settings(BaseSettings):
     )
 
     @model_validator(mode="after")
-    def apply_provider_defaults(self):
+    def apply_provider_defaults(self) -> Self:
         base_url, model, reasoning_effort = PROVIDER_DEFAULTS[self.llm_provider]
         if self.llm_api == "responses":
             reasoning_effort = RESPONSES_DEFAULT_REASONING_EFFORT

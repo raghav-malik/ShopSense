@@ -1,9 +1,10 @@
-from typing import Literal
+from typing import Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from app.db import queries
+from app.llm.types import JSONObject
 from app.tools.base import pydantic_to_tool_schema
 
 
@@ -27,7 +28,7 @@ class ManageCartInput(BaseModel):
     source: str | None = Field(default=None, description="Source website, e.g. 'amazon.in'")
 
     @model_validator(mode="after")
-    def check_required_fields(self):
+    def check_required_fields(self) -> Self:
         """Validate that add/remove have the fields they need."""
         if self.action == "add" and (not self.product_name or not self.url):
             raise ValueError("product_name and url are required when action is 'add'")
@@ -50,7 +51,7 @@ async def manage_cart(
     price: float | None = None,
     url: str | None = None,
     source: str | None = None,
-) -> dict:
+) -> JSONObject:
     """Execute a cart operation."""
 
     if action == "add":

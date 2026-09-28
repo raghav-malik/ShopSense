@@ -1,11 +1,14 @@
 import json
 import re
+from collections.abc import Iterator
+from typing import TypedDict
 from urllib.parse import urlparse
 
 import httpx
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from pydantic import BaseModel, Field, field_validator
 
+from app.llm.types import JSONObject
 from app.tools.base import pydantic_to_tool_schema
 
 CURRENCY_SYMBOLS = {"INR": "₹", "USD": "$", "EUR": "€", "GBP": "£"}
@@ -108,7 +111,7 @@ async def _fetch_html(url: str) -> str:
         raise FetchError("network_error", f"Network error: {type(e).__name__}", _USE_SNIPPET) from e
 
 
-async def extract_product_info(url: str) -> dict:
+async def extract_product_info(url: str) -> JSONObject:
     """
     Fetch a product URL and extract structured information.
     Uses Open Graph tags, JSON-LD, and meta tag fallbacks.
@@ -163,12 +166,25 @@ async def extract_product_info(url: str) -> dict:
         }
 
 
-def _extract_json_ld(soup: BeautifulSoup) -> dict:
+class ProductFields(TypedDict, total=False):
+    """What one extraction source (JSON-LD, Open Graph, meta tags) found."""
+
+    name: str
+    price: str | None
+    rating: str
+    features: list[str]
+    image: str | None
+    available: bool
+
+
+def _extract_json_ld(soup: BeautifulSoup) -> ProductFields:
     """Extract product data from the first JSON-LD Product node on the page."""
     for script in soup.find_all("script", type="application/ld+json"):
+        if not script.string:  # empty tag, or content split across child nodes
+            continue
         try:
             data = json.loads(script.string)
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError:
             continue
         for node in _iter_json_ld_nodes(data):
             if _is_product(node):
@@ -176,7 +192,7 @@ def _extract_json_ld(soup: BeautifulSoup) -> dict:
     return {}
 
 
-def _iter_json_ld_nodes(data):
+def _iter_json_ld_nodes(data: object) -> Iterator[JSONObject]:
     """Yield every object in a JSON-LD blob: top-level lists and @graph wrappers included."""
     if isinstance(data, list):
         for item in data:
@@ -187,29 +203,34 @@ def _iter_json_ld_nodes(data):
             yield from _iter_json_ld_nodes(data["@graph"])
 
 
-def _is_product(node: dict) -> bool:
+def _is_product(node: JSONObject) -> bool:
     types = node.get("@type")
     types = types if isinstance(types, list) else [types]
     return any(t in ("Product", "IndividualProduct") for t in types)
 
 
-def _parse_product_node(data: dict) -> dict:
-    result = {"name": data.get("name", "")}
+def _parse_product_node(data: JSONObject) -> ProductFields:
+    name = data.get("name")
+    result: ProductFields = {"name": name if isinstance(name, str) else ""}
     offers = data.get("offers")
     if isinstance(offers, list):
         offers = offers[0] if offers else None
     if isinstance(offers, dict):
         # AggregateOffer (multiple sellers) carries lowPrice instead of price.
-        result["price"] = _format_price(offers.get("price") or offers.get("lowPrice"), offers.get("priceCurrency"))
+        currency = offers.get("priceCurrency")
+        result["price"] = _format_price(
+            offers.get("price") or offers.get("lowPrice"), currency if isinstance(currency, str) else None
+        )
         availability = str(offers.get("availability", ""))
         if availability:
             result["available"] = availability.rstrip("/").endswith(("InStock", "LimitedAvailability", "OnlineOnly"))
-    if isinstance(data.get("aggregateRating"), dict):
-        ar = data["aggregateRating"]
-        result["rating"] = f"{ar.get('ratingValue', '?')} / 5 ({ar.get('reviewCount', '?')} reviews)"
-    if isinstance(data.get("description"), str):
+    rating = data.get("aggregateRating")
+    if isinstance(rating, dict):
+        result["rating"] = f"{rating.get('ratingValue', '?')} / 5 ({rating.get('reviewCount', '?')} reviews)"
+    description = data.get("description")
+    if isinstance(description, str):
         # Extract feature-like sentences
-        result["features"] = [s.strip() for s in data["description"].split(",")[:5] if s.strip()]
+        result["features"] = [s.strip() for s in description.split(",")[:5] if s.strip()]
     if "image" in data:
         img = data["image"]
         if isinstance(img, list):
@@ -220,7 +241,7 @@ def _parse_product_node(data: dict) -> dict:
     return result
 
 
-def _format_price(amount, currency: str | None) -> str | None:
+def _format_price(amount: object, currency: str | None) -> str | None:
     """'1299', 'INR' -> '₹1299'. Unknown currencies keep their code; none given means INR."""
     if amount in (None, ""):
         return None
@@ -229,35 +250,40 @@ def _format_price(amount, currency: str | None) -> str | None:
     return f"{symbol}{amount}"
 
 
-def _extract_og_tags(soup: BeautifulSoup) -> dict:
+def _meta_content(soup: BeautifulSoup, **attrs: str) -> str | None:
+    """The `content` of the first matching <meta>, if it's a plain string.
+    BeautifulSoup returns lists for multi-valued attributes, so check the type."""
+    tag = soup.find("meta", attrs=dict(attrs))
+    content = tag.get("content") if isinstance(tag, Tag) else None
+    return content if isinstance(content, str) else None
+
+
+def _extract_og_tags(soup: BeautifulSoup) -> ProductFields:
     """Extract Open Graph meta tags."""
-    result = {}
-    og_title = soup.find("meta", property="og:title")
-    if og_title:
-        result["name"] = og_title.get("content", "")
-    og_price = soup.find("meta", property="product:price:amount") or soup.find("meta", property="og:price:amount")
-    if og_price:
-        og_currency = soup.find("meta", property="product:price:currency") or soup.find(
-            "meta", property="og:price:currency"
+    result: ProductFields = {}
+    if (title := _meta_content(soup, property="og:title")) is not None:
+        result["name"] = title
+    amount = _meta_content(soup, property="product:price:amount") or _meta_content(soup, property="og:price:amount")
+    if amount:
+        currency = _meta_content(soup, property="product:price:currency") or _meta_content(
+            soup, property="og:price:currency"
         )
-        result["price"] = _format_price(og_price.get("content"), og_currency.get("content") if og_currency else None)
-    og_image = soup.find("meta", property="og:image")
-    if og_image:
-        result["image"] = og_image.get("content", "")
+        result["price"] = _format_price(amount, currency)
+    if (image := _meta_content(soup, property="og:image")) is not None:
+        result["image"] = image
     return result
 
 
-def _extract_meta(soup: BeautifulSoup) -> dict:
+def _extract_meta(soup: BeautifulSoup) -> ProductFields:
     """Fallback: extract from title and meta description."""
-    result = {}
+    result: ProductFields = {}
     title = soup.find("title")
-    if title:
+    if isinstance(title, Tag):
         result["name"] = title.get_text(strip=True)
-    desc = soup.find("meta", attrs={"name": "description"})
-    if desc:
-        content = desc.get("content", "")
+    description = _meta_content(soup, name="description")
+    if description:
         # Try to find a price pattern
-        price_match = re.search(r"₹[\d,]+(?:\.\d{2})?|Rs\.?\s*[\d,]+", content)
+        price_match = re.search(r"₹[\d,]+(?:\.\d{2})?|Rs\.?\s*[\d,]+", description)
         if price_match:
             result["price"] = price_match.group()
     return result

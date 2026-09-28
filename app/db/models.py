@@ -1,7 +1,10 @@
 import uuid
 from datetime import UTC, datetime
+from typing import Literal, TypedDict
 
 from pydantic import BaseModel, Field
+
+MessageRole = Literal["user", "assistant", "tool"]
 
 
 def new_id() -> str:
@@ -24,7 +27,7 @@ class Session(BaseModel):
 class Message(BaseModel):
     id: str = Field(default_factory=new_id)
     session_id: str
-    role: str  # 'user' | 'assistant' | 'tool'
+    role: MessageRole
     content: str
     tool_name: str | None = None
     tool_call_id: str | None = None
@@ -48,3 +51,29 @@ class Preference(BaseModel):
     key: str
     value: str  # JSON-encoded
     updated_at: str = Field(default_factory=now_iso)
+
+
+# Rows as returned by queries.py: one key per column, so readers of a row are
+# checked against the schema in database.py.
+
+
+class MessageRow(TypedDict):
+    id: str
+    session_id: str
+    role: MessageRole
+    content: str
+    tool_name: str | None
+    tool_call_id: str | None
+    created_at: str
+    token_count: int | None
+
+
+class CartItemRow(TypedDict):
+    id: str
+    session_id: str
+    product_name: str
+    price: float | None
+    currency: str
+    url: str
+    source: str | None
+    added_at: str

@@ -1,7 +1,8 @@
 import json
+from typing import Any, cast
 
 from app.db.database import get_db
-from app.db.models import CartItem, Message, Session, new_id, now_iso
+from app.db.models import CartItem, CartItemRow, Message, MessageRow, Session, new_id, now_iso
 
 # ---- Sessions ----
 
@@ -20,10 +21,10 @@ async def create_session(session_id: str | None = None) -> Session:
 
 async def get_session(session_id: str) -> Session | None:
     db = await get_db()
-    row = await db.execute_fetchall("SELECT * FROM sessions WHERE id = ?", (session_id,))
-    if not row:
+    rows = list(await db.execute_fetchall("SELECT * FROM sessions WHERE id = ?", (session_id,)))
+    if not rows:
         return None
-    r = row[0]
+    r = rows[0]
     return Session(
         id=r["id"],
         created_at=r["created_at"],
@@ -33,7 +34,7 @@ async def get_session(session_id: str) -> Session | None:
     )
 
 
-async def update_session_budget(session_id: str, budget: float):
+async def update_session_budget(session_id: str, budget: float) -> None:
     db = await get_db()
     await db.execute(
         "UPDATE sessions SET budget = ?, updated_at = ? WHERE id = ?",
@@ -45,7 +46,7 @@ async def update_session_budget(session_id: str, budget: float):
 # ---- Messages ----
 
 
-async def save_message(msg: Message):
+async def save_message(msg: Message) -> None:
     db = await get_db()
     await db.execute(
         """INSERT INTO messages (id, session_id, role, content, tool_name, tool_call_id, created_at, token_count)
@@ -64,8 +65,8 @@ async def save_message(msg: Message):
     await db.commit()
 
 
-async def get_messages(session_id: str, limit: int = 50) -> list[dict]:
-    """Returns the most recent `limit` messages, oldest first. Each message is a dict.
+async def get_messages(session_id: str, limit: int = 50) -> list[MessageRow]:
+    """Returns the most recent `limit` messages, oldest first.
 
     Takes the newest rows then flips them: `ORDER BY ... ASC LIMIT n` would return
     the oldest n, and long conversations would lose their recent context.
@@ -82,7 +83,7 @@ async def get_messages(session_id: str, limit: int = 50) -> list[dict]:
         (session_id, limit),
     )
     # .keys() is required: iterating a sqlite3.Row yields its values, not its column names.
-    return [{k: r[k] for k in r.keys() if k != "_seq"} for r in rows]  # noqa: SIM118
+    return [cast(MessageRow, {k: r[k] for k in r.keys() if k != "_seq"}) for r in rows]  # noqa: SIM118
 
 
 # ---- Cart ----
@@ -112,16 +113,16 @@ async def remove_from_cart(session_id: str, product_name: str) -> bool:
     return cursor.rowcount > 0
 
 
-async def get_cart(session_id: str) -> list[dict]:
+async def get_cart(session_id: str) -> list[CartItemRow]:
     db = await get_db()
     rows = await db.execute_fetchall(
         "SELECT * FROM cart_items WHERE session_id = ? ORDER BY added_at ASC",
         (session_id,),
     )
-    return [dict(r) for r in rows]
+    return [cast(CartItemRow, dict(r)) for r in rows]
 
 
-async def clear_cart(session_id: str):
+async def clear_cart(session_id: str) -> None:
     db = await get_db()
     await db.execute("DELETE FROM cart_items WHERE session_id = ?", (session_id,))
     await db.commit()
@@ -130,13 +131,14 @@ async def clear_cart(session_id: str):
 # ---- Preferences ----
 
 
-async def get_all_preferences() -> dict:
+async def get_all_preferences() -> dict[str, Any]:
+    """Preference key -> its JSON-decoded value."""
     db = await get_db()
     rows = await db.execute_fetchall("SELECT key, value FROM preferences")
     return {r["key"]: json.loads(r["value"]) for r in rows}
 
 
-async def set_preference(key: str, value) -> None:
+async def set_preference(key: str, value: object) -> None:
     db = await get_db()
     encoded = json.dumps(value)
     await db.execute(

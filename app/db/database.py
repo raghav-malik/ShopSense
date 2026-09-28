@@ -32,7 +32,7 @@ async def get_db() -> aiosqlite.Connection:
     return _db
 
 
-async def init_db():
+async def init_db() -> None:
     """Create tables if they don't exist. Called once at app startup."""
     db = await get_db()
 
@@ -83,7 +83,7 @@ async def init_db():
     await db.commit()
 
 
-async def close_db():
+async def close_db() -> None:
     """Close the database connection. Called at app shutdown."""
     global _db
     if _db is not None:

@@ -77,6 +77,24 @@ ignore = [
 known-first-party = ["app"]
 
 
+# ---- mypy ----
+
+[tool.mypy]
+python_version = "3.12"
+files = ["app", "frontend", "tests"]
+# frontend/app.py would otherwise clash with the `app` package; name modules by path.
+explicit_package_bases = true
+strict = true
+warn_unreachable = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+plugins = ["pydantic.mypy"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+
 # ---- pytest ----
 
 [tool.pytest]

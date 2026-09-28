@@ -10,6 +10,8 @@ Only tests marked `network` touch the internet (DuckDuckGo, real product pages).
 """
 
 import os
+from collections.abc import AsyncIterator
+from pathlib import Path
 
 # Must run before any `app` import: Settings() and the Langfuse client are
 # created at import time.
@@ -33,7 +35,7 @@ from app.db import database
 
 
 @pytest.fixture
-async def db(tmp_path, monkeypatch):
+async def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
     """A fresh, initialized database for one test."""
     monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
     await database.close_db()
@@ -43,7 +45,7 @@ async def db(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def isolated_db_path(tmp_path, monkeypatch):
+def isolated_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     """For TestClient tests: the app's lifespan opens and closes the DB itself."""
     monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
     return settings.db_path

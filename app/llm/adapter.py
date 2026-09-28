@@ -1,13 +1,24 @@
 import asyncio
 from abc import ABC, abstractmethod
 from functools import lru_cache
+from typing import cast, override
 
 import openai
 from openai import AsyncOpenAI, RateLimitError
+from openai.types.chat import ChatCompletion, ChatCompletionMessage, ChatCompletionMessageFunctionToolCall
+from openai.types.responses import Response, ResponseFunctionToolCall, ResponseReasoningItem
 
 from app.config import settings
 from app.llm.errors import LLMError, LLMRateLimitError, LLMTimeoutError, LLMUnavailableError
-from app.llm.types import PROVIDER_ITEMS_KEY, LLMResponse, ToolCall, ToolCallFunction
+from app.llm.types import (
+    PROVIDER_ITEMS_KEY,
+    ChatMessage,
+    ChatToolCall,
+    JSONObject,
+    LLMResponse,
+    ToolCall,
+    ToolCallFunction,
+)
 from app.tracing.generation import GenerationTrace
 
 # A per-minute limit (e.g. Groq free tier: 8K tokens/min) can ask for up to ~60s,
@@ -25,12 +36,12 @@ class LLMAdapter(ABC):
     @abstractmethod
     async def chat(
         self,
-        messages: list[dict],
-        tools: list[dict] | None = None,
+        messages: list[ChatMessage],
+        tools: list[JSONObject] | None = None,
         *,
         name: str = "generate-response",
         tool_choice: str = "auto",
-        trace_metadata: dict | None = None,
+        trace_metadata: JSONObject | None = None,
     ) -> LLMResponse:
         """Send messages to the LLM and get a response.
 
@@ -46,14 +57,15 @@ class LLMAdapter(ABC):
         ...
 
 
-class _OpenAISDKAdapter(LLMAdapter):
+class _OpenAISDKAdapter[ResponseT](LLMAdapter):
     """Shared by every adapter built on the OpenAI Python SDK: one client, the
     retry policy, the SDK-error to LLMError mapping, and generation tracing.
-    Subclasses implement one API's request, call, and response mapping."""
+    Subclasses implement one API's request, call, and response mapping;
+    ResponseT is that API's SDK response type."""
 
     api_name: str
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.client = AsyncOpenAI(
             api_key=settings.llm_api_key,
             base_url=settings.llm_base_url,
@@ -70,33 +82,36 @@ class _OpenAISDKAdapter(LLMAdapter):
     # --- implemented per API ---
 
     @abstractmethod
-    def _build_request(self, messages: list[dict], tools: list[dict] | None, tool_choice: str) -> dict: ...
+    def _build_request(
+        self, messages: list[ChatMessage], tools: list[JSONObject] | None, tool_choice: str
+    ) -> JSONObject: ...
 
     @abstractmethod
-    async def _create(self, kwargs: dict): ...
+    async def _create(self, kwargs: JSONObject) -> ResponseT: ...
 
     @abstractmethod
-    def _trace_input(self, kwargs: dict): ...
+    def _trace_input(self, kwargs: JSONObject) -> object: ...
 
     @abstractmethod
-    def _model_parameters(self, kwargs: dict, service_tier: str | None = None) -> dict: ...
+    def _model_parameters(self, kwargs: JSONObject, service_tier: str | None = None) -> JSONObject: ...
 
     @abstractmethod
-    def _success_update(self, kwargs: dict, response) -> dict: ...
+    def _success_update(self, kwargs: JSONObject, response: ResponseT) -> JSONObject: ...
 
     @abstractmethod
-    def _to_llm_response(self, response) -> LLMResponse: ...
+    def _to_llm_response(self, response: ResponseT) -> LLMResponse: ...
 
     # --- shared ---
 
+    @override
     async def chat(
         self,
-        messages: list[dict],
-        tools: list[dict] | None = None,
+        messages: list[ChatMessage],
+        tools: list[JSONObject] | None = None,
         *,
         name: str = "generate-response",
         tool_choice: str = "auto",
-        trace_metadata: dict | None = None,
+        trace_metadata: JSONObject | None = None,
     ) -> LLMResponse:
         kwargs = self._build_request(messages, tools, tool_choice)
 
@@ -111,7 +126,7 @@ class _OpenAISDKAdapter(LLMAdapter):
                 response = await self._traced_call(
                     kwargs, name=name, attempt=attempt + 1, trace_metadata=trace_metadata or {}
                 )
-                break
+                return self._to_llm_response(response)
             except RateLimitError as e:
                 wait = _retry_after_seconds(e)
                 if last_attempt or wait > MAX_RETRY_WAIT_SECONDS:
@@ -135,15 +150,17 @@ class _OpenAISDKAdapter(LLMAdapter):
                 raise LLMUnavailableError(f"{provider} doesn't exist or this key can't use it; check LLM_MODEL") from e
             except (openai.AuthenticationError, openai.PermissionDeniedError) as e:
                 raise LLMUnavailableError(
-                    f"{settings.llm_provider} rejected the API key (HTTP {e.status_code}); check {settings.llm_provider.upper()}_API_KEY"
+                    f"{settings.llm_provider} rejected the API key (HTTP {e.status_code}); "
+                    f"check {settings.llm_provider.upper()}_API_KEY"
                 ) from e
             except openai.APIStatusError as e:  # 400/413/422...: the request itself was rejected
                 raise LLMError(f"{provider} rejected the request (HTTP {e.status_code}): {e.message}") from e
             await asyncio.sleep(wait)
+        raise AssertionError("unreachable: the last attempt returns or raises")
 
-        return self._to_llm_response(response)
-
-    async def _traced_call(self, kwargs: dict, *, name: str, attempt: int, trace_metadata: dict):
+    async def _traced_call(
+        self, kwargs: JSONObject, *, name: str, attempt: int, trace_metadata: JSONObject
+    ) -> ResponseT:
         """One API call = one Langfuse generation, opened before the call and
         completed after it succeeds or fails (every attempt, including a 429
         before the retry, is its own generation). Pattern from Airtap's omniTracing."""
@@ -166,13 +183,16 @@ class _OpenAISDKAdapter(LLMAdapter):
             return response
 
 
-class ChatCompletionsAdapter(_OpenAISDKAdapter):
+class ChatCompletionsAdapter(_OpenAISDKAdapter[ChatCompletion]):
     """OpenAI Chat Completions API: Groq, and OpenAI with LLM_API=chat_completions."""
 
     api_name = "chat_completions"
 
-    def _build_request(self, messages, tools, tool_choice):
-        kwargs = {
+    @override
+    def _build_request(
+        self, messages: list[ChatMessage], tools: list[JSONObject] | None, tool_choice: str
+    ) -> JSONObject:
+        kwargs: JSONObject = {
             "model": self.model,
             # Drop adapter-private keys (e.g. Responses reasoning items) the API would reject.
             "messages": [{k: v for k, v in m.items() if not k.startswith("_")} for m in messages],
@@ -190,29 +210,32 @@ class ChatCompletionsAdapter(_OpenAISDKAdapter):
             kwargs["tool_choice"] = tool_choice
         return kwargs
 
-    async def _create(self, kwargs):
+    @override
+    async def _create(self, kwargs: JSONObject) -> ChatCompletion:
         return await self.client.chat.completions.create(**kwargs)
 
-    def _trace_input(self, kwargs):
+    @override
+    def _trace_input(self, kwargs: JSONObject) -> object:
         """OpenAI chat format, the same shape Langfuse's own OpenAI integration logs,
         so the UI renders a conversation and tool definitions rather than raw JSON."""
         if kwargs.get("tools"):
             return {"messages": kwargs["messages"], "tools": kwargs["tools"]}
         return kwargs["messages"]
 
-    def _model_parameters(self, kwargs, service_tier=None):
+    @override
+    def _model_parameters(self, kwargs: JSONObject, service_tier: str | None = None) -> JSONObject:
         return _pick_params(
             kwargs, ("temperature", "max_completion_tokens", "reasoning_effort", "tool_choice"), service_tier
         )
 
-    def _success_update(self, kwargs, response):
+    @override
+    def _success_update(self, kwargs: JSONObject, response: ChatCompletion) -> JSONObject:
         choice = response.choices[0]
         message = choice.message
         output = _assistant_output(
             message.content,
-            [(tc.id, tc.function.name, tc.function.arguments) for tc in message.tool_calls or []],
-            # Groq returns reasoning models' thinking as a non-OpenAI field.
-            (message.model_extra or {}).get("reasoning"),
+            [(tc.id, tc.function.name, tc.function.arguments) for tc in _function_calls(message)],
+            _extra_reasoning(message),
         )
         usage = response.usage
         return {
@@ -230,11 +253,12 @@ class ChatCompletionsAdapter(_OpenAISDKAdapter):
             else None,
             # Langfuse picks the price tier (standard/flex/priority) from
             # service_tier, and only the response says which ran.
-            "model_parameters": self._model_parameters(kwargs, getattr(response, "service_tier", None)),
+            "model_parameters": self._model_parameters(kwargs, response.service_tier),
             "metadata": {"finish_reason": choice.finish_reason},
         }
 
-    def _to_llm_response(self, response):
+    @override
+    def _to_llm_response(self, response: ChatCompletion) -> LLMResponse:
         choice = response.choices[0]
         tool_calls = [
             ToolCall(
@@ -242,14 +266,15 @@ class ChatCompletionsAdapter(_OpenAISDKAdapter):
                 type=tc.type,
                 function=ToolCallFunction(name=tc.function.name, arguments=tc.function.arguments),
             )
-            for tc in choice.message.tool_calls or []
+            for tc in _function_calls(choice.message)
         ] or None
         usage = response.usage
         return LLMResponse(
             content=choice.message.content,
-            reasoning=(choice.message.model_extra or {}).get("reasoning"),
+            reasoning=_extra_reasoning(choice.message),
             tool_calls=tool_calls,
-            finish_reason=choice.finish_reason or "stop",
+            # Typed as always present, but OpenAI-compatible providers can omit it.
+            finish_reason=cast(str | None, choice.finish_reason) or "stop",
             usage={
                 "prompt_tokens": usage.prompt_tokens if usage else 0,
                 "completion_tokens": usage.completion_tokens if usage else 0,
@@ -272,18 +297,23 @@ class GeminiAdapter(ChatCompletionsAdapter):
     Airtap's native-SDK omniGemini.ts preserves `thoughtSignature` the same way.
     """
 
-    def _build_request(self, messages, tools, tool_choice):
-        replayed = [
-            {**m, "tool_calls": m[PROVIDER_ITEMS_KEY]}
-            if m.get("role") == "assistant" and m.get(PROVIDER_ITEMS_KEY)
-            else m
-            for m in messages
-        ]
+    @override
+    def _build_request(
+        self, messages: list[ChatMessage], tools: list[JSONObject] | None, tool_choice: str
+    ) -> JSONObject:
+        replayed: list[ChatMessage] = []
+        for m in messages:
+            if m["role"] == "assistant" and m.get(PROVIDER_ITEMS_KEY):
+                m = m.copy()
+                # Same shape as ChatToolCall plus Gemini's `extra_content`.
+                m["tool_calls"] = cast(list[ChatToolCall], m[PROVIDER_ITEMS_KEY])
+            replayed.append(m)
         kwargs = super()._build_request(replayed, tools, tool_choice)
         kwargs.pop("temperature", None)
         return kwargs
 
-    def _to_llm_response(self, response):
+    @override
+    def _to_llm_response(self, response: ChatCompletion) -> LLMResponse:
         result = super()._to_llm_response(response)
         tool_calls = response.choices[0].message.tool_calls
         if tool_calls:
@@ -291,7 +321,8 @@ class GeminiAdapter(ChatCompletionsAdapter):
             result.provider_items = [tc.model_dump(exclude_none=True) for tc in tool_calls]
         return result
 
-    def _success_update(self, kwargs, response):
+    @override
+    def _success_update(self, kwargs: JSONObject, response: ChatCompletion) -> JSONObject:
         """Gemini's OpenAI endpoint leaves thinking tokens out of completion_tokens
         (and completion_tokens_details is null); they only show up in total_tokens.
         Measured: 18 prompt + 11 completion but total 227. Google bills thinking
@@ -300,13 +331,13 @@ class GeminiAdapter(ChatCompletionsAdapter):
         update = super()._success_update(kwargs, response)
         usage = response.usage
         hidden_thinking = usage.total_tokens - usage.prompt_tokens - usage.completion_tokens if usage else 0
-        if hidden_thinking > 0 and update.get("usage_details"):
-            buckets = update["usage_details"]
+        buckets: dict[str, int] | None = update.get("usage_details")
+        if hidden_thinking > 0 and buckets:
             buckets["output_reasoning_tokens"] = buckets.get("output_reasoning_tokens", 0) + hidden_thinking
         return update
 
 
-class ResponsesAdapter(_OpenAISDKAdapter):
+class ResponsesAdapter(_OpenAISDKAdapter[Response]):
     """OpenAI Responses API (LLM_API=responses): reasoning *and* function tools
     together, which Chat Completions doesn't allow on GPT-6, with reasoning
     summaries recorded on each generation. Structure follows Airtap's
@@ -321,9 +352,12 @@ class ResponsesAdapter(_OpenAISDKAdapter):
 
     api_name = "responses"
 
-    def _build_request(self, messages, tools, tool_choice):
+    @override
+    def _build_request(
+        self, messages: list[ChatMessage], tools: list[JSONObject] | None, tool_choice: str
+    ) -> JSONObject:
         instructions, items = _messages_to_responses_input(messages)
-        kwargs = {
+        kwargs: JSONObject = {
             "model": self.model,
             "input": items,
             "store": False,  # nothing retained on OpenAI's side; we resend context
@@ -343,26 +377,29 @@ class ResponsesAdapter(_OpenAISDKAdapter):
             kwargs["tool_choice"] = tool_choice
         return kwargs
 
-    async def _create(self, kwargs):
+    @override
+    async def _create(self, kwargs: JSONObject) -> Response:
         return await self.client.responses.create(**kwargs)
 
-    def _trace_input(self, kwargs):
+    @override
+    def _trace_input(self, kwargs: JSONObject) -> object:
         """Instructions as a system message, then the input items: the same shape
         Langfuse's OpenAI integration logs for Responses calls."""
-        messages = (
-            [{"role": "system", "content": kwargs["instructions"]}] if kwargs.get("instructions") else []
-        ) + kwargs["input"]
+        system = [{"role": "system", "content": kwargs["instructions"]}] if kwargs.get("instructions") else []
+        messages = [*system, *kwargs["input"]]
         if kwargs.get("tools"):
             return {"messages": messages, "tools": kwargs["tools"]}
         return messages
 
-    def _model_parameters(self, kwargs, service_tier=None):
+    @override
+    def _model_parameters(self, kwargs: JSONObject, service_tier: str | None = None) -> JSONObject:
         params = _pick_params(kwargs, ("temperature", "max_output_tokens", "tool_choice"), service_tier)
         if kwargs.get("reasoning"):
             params["reasoning_effort"] = kwargs["reasoning"]["effort"]
         return params
 
-    def _success_update(self, kwargs, response):
+    @override
+    def _success_update(self, kwargs: JSONObject, response: Response) -> JSONObject:
         text, calls, reasoning = _parse_responses_output(response)
         usage = response.usage
         return {
@@ -380,11 +417,12 @@ class ResponsesAdapter(_OpenAISDKAdapter):
             )
             if usage
             else None,
-            "model_parameters": self._model_parameters(kwargs, getattr(response, "service_tier", None)),
+            "model_parameters": self._model_parameters(kwargs, response.service_tier),
             "metadata": {"status": response.status, **_incomplete_reason(response)},
         }
 
-    def _to_llm_response(self, response):
+    @override
+    def _to_llm_response(self, response: Response) -> LLMResponse:
         text, calls, reasoning = _parse_responses_output(response)
         tool_calls = [
             ToolCall(id=c.call_id, function=ToolCallFunction(name=c.name, arguments=c.arguments)) for c in calls
@@ -412,16 +450,31 @@ class ResponsesAdapter(_OpenAISDKAdapter):
             provider_items=[
                 item.model_dump(exclude_none=True)
                 for item in response.output
-                if item.type in ("reasoning", "function_call")
+                if isinstance(item, ResponseReasoningItem | ResponseFunctionToolCall)
             ]
             or None,
         )
 
 
+# ---- Chat Completions helpers ----
+
+
+def _function_calls(message: ChatCompletionMessage) -> list[ChatCompletionMessageFunctionToolCall]:
+    """Function tool calls only. The SDK types tool_calls as function | custom;
+    we only ever register function tools."""
+    return [tc for tc in message.tool_calls or [] if isinstance(tc, ChatCompletionMessageFunctionToolCall)]
+
+
+def _extra_reasoning(message: ChatCompletionMessage) -> str | None:
+    """Groq returns reasoning models' thinking as a non-OpenAI `reasoning` field."""
+    reasoning = (message.model_extra or {}).get("reasoning")
+    return reasoning if isinstance(reasoning, str) else None
+
+
 # ---- Responses API conversions ----
 
 
-def _chat_tool_to_responses(tool: dict) -> dict:
+def _chat_tool_to_responses(tool: JSONObject) -> JSONObject:
     """Chat Completions nests the definition under "function"; Responses is flat.
     strict=False keeps validation behaviour identical to Chat Completions: our
     Pydantic schemas have optional fields, and the registry validates anyway."""
@@ -435,7 +488,7 @@ def _chat_tool_to_responses(tool: dict) -> dict:
     }
 
 
-def _messages_to_responses_input(messages: list[dict]) -> tuple[str | None, list[dict]]:
+def _messages_to_responses_input(messages: list[ChatMessage]) -> tuple[str | None, list[JSONObject]]:
     """Chat-format history -> (instructions, input items).
 
     - The leading system message becomes `instructions`; later system messages
@@ -444,8 +497,8 @@ def _messages_to_responses_input(messages: list[dict]) -> tuple[str | None, list
       (reasoning + function calls); otherwise tool_calls become function_call items.
     - Tool results become function_call_output items.
     """
-    instructions = None
-    items: list[dict] = []
+    instructions: str | None = None
+    items: list[JSONObject] = []
     for i, m in enumerate(messages):
         role = m["role"]
         if role == "system":
@@ -456,8 +509,8 @@ def _messages_to_responses_input(messages: list[dict]) -> tuple[str | None, list
         elif role == "user":
             items.append({"role": "user", "content": m["content"]})
         elif role == "assistant":
-            if m.get(PROVIDER_ITEMS_KEY):
-                items.extend(m[PROVIDER_ITEMS_KEY])
+            if provider_items := m.get(PROVIDER_ITEMS_KEY):
+                items.extend(provider_items)
             else:
                 items.extend(
                     {
@@ -466,47 +519,45 @@ def _messages_to_responses_input(messages: list[dict]) -> tuple[str | None, list
                         "name": tc["function"]["name"],
                         "arguments": tc["function"]["arguments"],
                     }
-                    for tc in m.get("tool_calls") or []
+                    for tc in m.get("tool_calls", [])
                 )
-            if m.get("content") and not m.get("tool_calls"):
+            if m["content"] and not m.get("tool_calls"):
                 items.append({"role": "assistant", "content": m["content"]})
         elif role == "tool":
-            items.append({"type": "function_call_output", "call_id": m["tool_call_id"], "output": m["content"]})
+            items.append({"type": "function_call_output", "call_id": m.get("tool_call_id"), "output": m["content"]})
     return instructions, items
 
 
-def _parse_responses_output(response):
+def _parse_responses_output(response: Response) -> tuple[str, list[ResponseFunctionToolCall], str | None]:
     """-> (text, function_call items, reasoning summary text)."""
-    calls = [item for item in response.output if item.type == "function_call"]
+    calls = [item for item in response.output if isinstance(item, ResponseFunctionToolCall)]
     summaries = [
         part.text.strip()
         for item in response.output
-        if item.type == "reasoning"
-        for part in (item.summary or [])
-        if part.text and part.text.strip()
+        if isinstance(item, ResponseReasoningItem)
+        for part in item.summary
+        if part.text.strip()
     ]
     return response.output_text or "", calls, "\n\n".join(summaries) or None
 
 
-def _incomplete_reason(response) -> dict:
-    details = getattr(response, "incomplete_details", None)
-    return {"incomplete_reason": details.reason} if details and getattr(details, "reason", None) else {}
+def _incomplete_reason(response: Response) -> JSONObject:
+    details = response.incomplete_details
+    return {"incomplete_reason": details.reason} if details and details.reason else {}
 
 
 # ---- shared helpers ----
 
 
-def _pick_params(kwargs: dict, keys: tuple[str, ...], service_tier: str | None) -> dict:
+def _pick_params(kwargs: JSONObject, keys: tuple[str, ...], service_tier: str | None) -> JSONObject:
     params = {k: kwargs[k] for k in keys if k in kwargs}
-    if "reasoning_effort" in kwargs:
-        params["reasoning_effort"] = kwargs["reasoning_effort"]
     if service_tier:
         params["service_tier"] = service_tier
     return params
 
 
-def _assistant_output(content: str | None, calls: list[tuple[str, str, str]], reasoning: str | None) -> dict:
-    output = {"role": "assistant", "content": content}
+def _assistant_output(content: str | None, calls: list[tuple[str, str, str]], reasoning: str | None) -> JSONObject:
+    output: JSONObject = {"role": "assistant", "content": content}
     if calls:
         output["tool_calls"] = [
             {"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}}
@@ -519,9 +570,11 @@ def _assistant_output(content: str | None, calls: list[tuple[str, str, str]], re
     return output
 
 
-def _detail(usage, details_field: str, key: str) -> int:
+def _detail(usage: object, details_field: str, key: str) -> int:
+    """A token count from an optional *_details object (absent on some providers)."""
     details = getattr(usage, details_field, None)
-    return (getattr(details, key, None) or 0) if details else 0
+    value = getattr(details, key, None) if details is not None else None
+    return value if isinstance(value, int) else 0
 
 
 def _usage_buckets(
@@ -548,9 +601,11 @@ def _usage_buckets(
 def _retry_after_seconds(error: RateLimitError) -> float:
     """Seconds to wait, from the 429's retry-after header (Groq and OpenAI send seconds)."""
     value = error.response.headers.get("retry-after")
+    if value is None:
+        return DEFAULT_RETRY_WAIT_SECONDS
     try:
         return max(float(value), 0.0)
-    except (TypeError, ValueError):
+    except ValueError:  # an HTTP-date instead of seconds
         return DEFAULT_RETRY_WAIT_SECONDS
 
 
@@ -577,10 +632,14 @@ def get_llm_adapter() -> LLMAdapter:
 
 if __name__ == "__main__":
     # Connection smoke test. From the project root:  python -m app.llm.adapter
+    import io
     import sys
 
+    from app.tracing.langfuse_setup import shutdown_langfuse
+
     # Windows consoles default to cp1252 and crash on the model's emoji.
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
     async def _smoke_test() -> None:
         llm = get_llm_adapter()
@@ -591,8 +650,6 @@ if __name__ == "__main__":
         print(f"usage:         {response.usage}")
         print(f"reasoning:     {(response.reasoning or '')[:200]!r}")
         print(f"\n{response.content}")
-
-    from app.tracing.langfuse_setup import shutdown_langfuse
 
     try:
         asyncio.run(_smoke_test())

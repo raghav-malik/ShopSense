@@ -6,6 +6,7 @@ import json
 import pytest
 from ddgs.exceptions import DDGSException, RatelimitException
 
+from app.llm.types import JSONObject
 from app.tools import registry, search
 from app.tools.cart import manage_cart
 from app.tools.compare import compare_products
@@ -17,16 +18,17 @@ from app.tools.search import MAX_RESULTS, SNIPPET_MAX_CHARS, search_products
 KNOWN_PRODUCT_URL = "https://www.boat-lifestyle.com/products/airdopes-141"
 
 
-async def run(name: str, args: dict, session_id: str = "s1") -> dict:
+async def run(name: str, args: JSONObject, session_id: str = "s1") -> JSONObject:
     """Call a tool the way the agent does: JSON args through the registry."""
-    return json.loads(await execute_tool(name, json.dumps({"reasoning": "test", **args}), session_id))
+    result: JSONObject = json.loads(await execute_tool(name, json.dumps({"reasoning": "test", **args}), session_id))
+    return result
 
 
 # ---- search_products ----
 
 
 @pytest.mark.network
-async def test_search_products_returns_results():
+async def test_search_products_returns_results() -> None:
     result = await search_products("wireless earbuds under 3000 INR", max_results=3)
     assert "error" not in result
     assert isinstance(result["results"], list)
@@ -37,7 +39,7 @@ async def test_search_products_returns_results():
 
 
 @pytest.mark.network
-async def test_search_products_has_required_fields():
+async def test_search_products_has_required_fields() -> None:
     result = await search_products("laptop bag", max_results=2)
     for r in result["results"]:
         assert set(r) == {"title", "url", "snippet", "source"}
@@ -47,15 +49,15 @@ async def test_search_products_has_required_fields():
         assert len(r["snippet"]) <= SNIPPET_MAX_CHARS + 2
 
 
-async def test_search_products_empty_results(monkeypatch):
+async def test_search_products_empty_results(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(search, "_ddgs_text", lambda q, n: [])
     result = await search_products("earbuds", max_results=3)
     assert result["results"] == [] and result["result_count"] == 0
     assert "No products found" in result["message"]
 
 
-async def test_search_products_no_results_exception_is_not_an_error(monkeypatch):
-    def raise_no_results(q, n):
+async def test_search_products_no_results_exception_is_not_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def raise_no_results(q: str, n: int) -> list[JSONObject]:
         raise DDGSException("No results found.")
 
     monkeypatch.setattr(search, "_ddgs_text", raise_no_results)
@@ -63,8 +65,8 @@ async def test_search_products_no_results_exception_is_not_an_error(monkeypatch)
     assert "error" not in result and result["results"] == []
 
 
-async def test_search_products_rate_limit_has_type_and_hint(monkeypatch):
-    def raise_rate_limit(q, n):
+async def test_search_products_rate_limit_has_type_and_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    def raise_rate_limit(q: str, n: int) -> list[JSONObject]:
         raise RatelimitException("202 Ratelimit")
 
     monkeypatch.setattr(search, "_ddgs_text", raise_rate_limit)
@@ -72,7 +74,7 @@ async def test_search_products_rate_limit_has_type_and_hint(monkeypatch):
     assert result["error_type"] == "rate_limited" and result["hint"] and result["results"] == []
 
 
-async def test_search_max_results_is_capped():
+async def test_search_max_results_is_capped() -> None:
     result = await run("search_products", {"query": "earbuds", "max_results": MAX_RESULTS + 5})
     assert result["error"] == "validation_failed"
 
@@ -81,7 +83,7 @@ async def test_search_max_results_is_capped():
 
 
 @pytest.mark.network
-async def test_extract_known_product_page():
+async def test_extract_known_product_page() -> None:
     result = await extract_product_info(KNOWN_PRODUCT_URL)
     assert "error" not in result, result
     assert "Airdopes 141" in result["name"]
@@ -93,20 +95,20 @@ async def test_extract_known_product_page():
 
 
 @pytest.mark.network
-async def test_extract_missing_page_is_not_found():
+async def test_extract_missing_page_is_not_found() -> None:
     result = await extract_product_info("https://www.boat-lifestyle.com/products/this-product-does-not-exist-xyz")
     assert result["error_type"] == "not_found"
     assert result["available"] is False and result["hint"]
 
 
 @pytest.mark.network
-async def test_extract_unknown_host_is_connection_failed():
+async def test_extract_unknown_host_is_connection_failed() -> None:
     result = await extract_product_info("https://no-such-shop.shopsense-test.invalid/p/1")
     assert result["error_type"] == "connection_failed"
 
 
 @pytest.mark.parametrize("url", ["file:///etc/passwd", "earbuds under 3000", "https://"])
-async def test_extract_rejects_non_http_urls_before_fetching(url):
+async def test_extract_rejects_non_http_urls_before_fetching(url: str) -> None:
     result = await run("extract_product_info", {"url": url})
     assert result["error"] == "validation_failed"
     assert "http(s)" in result["validation_errors"][0]["msg"]
@@ -115,12 +117,12 @@ async def test_extract_rejects_non_http_urls_before_fetching(url):
 # ---- compare_products ----
 
 
-async def test_compare_products_needs_two():
+async def test_compare_products_needs_two() -> None:
     result = await compare_products([{"name": "A", "price": "100", "url": "http://a.com"}])
     assert "error" in result
 
 
-async def test_compare_products_builds_table():
+async def test_compare_products_builds_table() -> None:
     products = [
         {"name": "Product A", "price": "₹1,299", "features": ["Bluetooth", "IPX4"], "url": "http://a.com"},
         {"name": "Product B", "price": "₹2,499", "features": ["ANC", "USB-C"], "url": "http://b.com"},
@@ -132,7 +134,7 @@ async def test_compare_products_builds_table():
     assert "| Product A | ₹1,299 | Bluetooth, IPX4 | N/A | [Buy](http://a.com) |" in table
 
 
-async def test_compare_escapes_pipes_and_shows_missing_rating_as_na():
+async def test_compare_escapes_pipes_and_shows_missing_rating_as_na() -> None:
     # Through the registry, validated products arrive with rating=None (SR-60).
     result = await run(
         "compare_products",
@@ -148,7 +150,7 @@ async def test_compare_escapes_pipes_and_shows_missing_rating_as_na():
     assert "None" not in result["comparison_table"]
 
 
-async def test_compare_rejects_one_product_via_registry():
+async def test_compare_rejects_one_product_via_registry() -> None:
     result = await run("compare_products", {"products": [{"name": "A", "price": "1", "url": "http://a"}]})
     assert result["error"] == "validation_failed"
 
@@ -156,7 +158,7 @@ async def test_compare_rejects_one_product_via_registry():
 # ---- manage_cart (real SQLite, isolated per test) ----
 
 
-async def test_cart_add_view_remove_clear(db):
+async def test_cart_add_view_remove_clear(db: None) -> None:
     from app.db import queries
 
     session = await queries.create_session()
@@ -179,7 +181,7 @@ async def test_cart_add_view_remove_clear(db):
     assert cleared == {"message": "Cart cleared.", "cart_size": 0, "total": 0}
 
 
-async def test_cart_is_per_session(db):
+async def test_cart_is_per_session(db: None) -> None:
     from app.db import queries
 
     a, b = await queries.create_session(), await queries.create_session()
@@ -187,7 +189,7 @@ async def test_cart_is_per_session(db):
     assert (await manage_cart("view", b.id))["items"] == []
 
 
-async def test_cart_add_without_url_fails_validation_with_json_error(db):
+async def test_cart_add_without_url_fails_validation_with_json_error(db: None) -> None:
     # A model_validator error: its ctx holds a raw ValueError, which used to
     # crash json.dumps inside the registry's own error handler (SR-59).
     result = await run("manage_cart", {"action": "add", "product_name": "X"})
@@ -198,7 +200,7 @@ async def test_cart_add_without_url_fails_validation_with_json_error(db):
 # ---- get_preferences (real SQLite) ----
 
 
-async def test_preferences_set_and_get(db):
+async def test_preferences_set_and_get(db: None) -> None:
     set_list = await handle_preferences("set", key="preferred_brands", value='["Samsung", "Sony"]')
     assert set_list["preferences"] == {"preferred_brands": ["Samsung", "Sony"]}
     # A bare string (not JSON) is stored as-is; a second set upserts.
@@ -209,35 +211,35 @@ async def test_preferences_set_and_get(db):
 # ---- registry ----
 
 
-async def test_registry_unknown_tool():
+async def test_registry_unknown_tool() -> None:
     result = await run("buy_now", {})
     assert result["error"] == "unknown_tool"
     assert set(result["available_tools"]) == {s["function"]["name"] for s in get_tool_schemas()}
 
 
 @pytest.mark.parametrize("raw", ['{"query": ', '["earbuds"]'])
-async def test_registry_rejects_bad_json(raw):
+async def test_registry_rejects_bad_json(raw: str) -> None:
     result = json.loads(await execute_tool("search_products", raw, "s1"))
     assert result["error"] == "invalid_json"
 
 
-async def test_registry_missing_reasoning_fails_validation():
+async def test_registry_missing_reasoning_fails_validation() -> None:
     result = json.loads(await execute_tool("search_products", json.dumps({"query": "x"}), "s1"))
     assert result["error"] == "validation_failed"
     assert result["validation_errors"][0]["loc"] == ["reasoning"]
 
 
-async def test_registry_strips_reasoning_and_injects_session(monkeypatch):
+async def test_registry_strips_reasoning_and_injects_session(monkeypatch: pytest.MonkeyPatch) -> None:
     # The LLM-only `reasoning` field must never reach an executor (SR-25), and
     # the cart's session_id comes from the server, not the model.
     received = {}
 
-    async def fake_cart(**kwargs):
+    async def fake_cart(**kwargs: object) -> JSONObject:
         received.update(kwargs)
         return {"ok": True}
 
-    _executor, schema, model, needs_session = registry.TOOL_MAP["manage_cart"]
-    monkeypatch.setitem(registry.TOOL_MAP, "manage_cart", (fake_cart, schema, model, needs_session))
+    spec = registry.TOOL_MAP["manage_cart"]
+    monkeypatch.setitem(registry.TOOL_MAP, "manage_cart", spec._replace(executor=fake_cart))
     await execute_tool(
         "manage_cart", json.dumps({"reasoning": "user asked", "action": "view", "session_id": "hacked"}), "real-session"
     )
@@ -245,7 +247,7 @@ async def test_registry_strips_reasoning_and_injects_session(monkeypatch):
     assert received["session_id"] == "real-session"
 
 
-def test_tool_schemas_are_openai_function_format():
+def test_tool_schemas_are_openai_function_format() -> None:
     schemas = get_tool_schemas()
     assert [s["function"]["name"] for s in schemas] == [
         "search_products",

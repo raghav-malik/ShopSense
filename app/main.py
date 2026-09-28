@@ -1,6 +1,8 @@
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 
@@ -18,7 +20,7 @@ logger.setLevel(logging.INFO)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Startup and shutdown events."""
     # Startup
     await init_db()
@@ -69,7 +71,7 @@ async def _langfuse_project_url() -> str | None:
 
 
 @app.get("/health")
-async def health():
+async def health() -> dict[str, Any]:
     # The frontend reads the model and dashboard link from here rather than
     # hardcoding them (the spec's UI said "Llama 3.3 70B" and linked the EU region).
     return {

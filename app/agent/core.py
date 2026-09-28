@@ -17,6 +17,7 @@ Observation names are referenced by Langfuse evaluators and dashboards; keep the
 import asyncio
 import contextlib
 import json
+from typing import Literal
 
 from langfuse import observe, propagate_attributes
 
@@ -25,10 +26,10 @@ from app.agent.schemas import AgentResponse
 from app.agent.suggestions import generate_suggestions
 from app.config import settings
 from app.db import queries
-from app.db.models import Message
-from app.llm.adapter import get_llm_adapter
+from app.db.models import Message, MessageRow
+from app.llm.adapter import LLMAdapter, get_llm_adapter
 from app.llm.errors import LLMError
-from app.llm.types import PROVIDER_ITEMS_KEY
+from app.llm.types import PROVIDER_ITEMS_KEY, ChatMessage, JSONObject
 from app.tools.registry import TOOL_MAP, execute_tool, get_tool_schemas
 
 # Importing this module creates the Langfuse client. Import order doesn't matter:
@@ -39,27 +40,38 @@ langfuse = get_langfuse()
 
 # Lookups that don't change state are retrievers; everything else (cart and
 # preference writes, the comparison transform) is a plain tool.
-TOOL_OBSERVATION_TYPES = {
+TOOL_OBSERVATION_TYPES: dict[str, Literal["retriever", "tool"]] = {
     "search_products": "retriever",
     "extract_product_info": "retriever",
 }
 
 
 @observe(name="run-agent", as_type="agent", capture_input=False, capture_output=False)
-async def run_agent(session_id: str, user_message: str) -> AgentResponse:
+async def run_agent(
+    session_id: str,
+    user_message: str,
+    *,
+    llm: LLMAdapter | None = None,
+    langfuse_trace_id: str | None = None,
+) -> AgentResponse:
     """
     Main agent loop. Implements the ReAct pattern:
     1. Load context (history, preferences, cart)
     2. Build messages array with system prompt
     3. Loop: LLM call → tool dispatch → observe → repeat until done
     4. Return final response with metadata
+
+    `llm` defaults to the configured provider; tests pass a fake. The agent's
+    only dependency on a model is this argument.
+    `langfuse_trace_id` is consumed by @observe (it sets this run's trace id, so
+    a caller can link to the trace even if the run fails); it never reaches the body.
     """
     # Trace input is the user's message only, not every function argument.
     langfuse.update_current_span(input=user_message)
 
     # Everything inside (generations, tools, suggestions) inherits the session.
     with propagate_attributes(session_id=session_id, trace_name="run-agent"):
-        result = await _run_agent(session_id, user_message)
+        result = await _run_agent(session_id, user_message, llm or get_llm_adapter())
 
     langfuse.update_current_span(
         output=result.response,
@@ -73,7 +85,7 @@ async def run_agent(session_id: str, user_message: str) -> AgentResponse:
     return result
 
 
-async def _run_agent(session_id: str, user_message: str) -> AgentResponse:
+async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter) -> AgentResponse:
     # 1. Load session context
     session = await queries.get_session(session_id)
     if not session:
@@ -86,7 +98,7 @@ async def _run_agent(session_id: str, user_message: str) -> AgentResponse:
 
     # 2. Build messages array
     system_prompt = build_system_prompt(preferences, cart, session.budget)
-    messages = [{"role": "system", "content": system_prompt}]
+    messages: list[ChatMessage] = [{"role": "system", "content": system_prompt}]
     messages.extend(_replay_history(history))
 
     # Add the new user message
@@ -102,10 +114,9 @@ async def _run_agent(session_id: str, user_message: str) -> AgentResponse:
     )
 
     # 3. ReAct loop
-    llm = get_llm_adapter()
     tools_schema = get_tool_schemas()
     tools_called: list[str] = []
-    products_found: list[dict] = []
+    products_found: list[JSONObject] = []
     total_tokens = 0
     step_count = 0
 
@@ -140,7 +151,7 @@ async def _run_agent(session_id: str, user_message: str) -> AgentResponse:
             messages.append({"role": "assistant", "content": final_text})
 
             # Generate follow-on suggestions (best-effort, from Airtap pattern)
-            suggestions = await generate_suggestions(messages)
+            suggestions = await generate_suggestions(messages, llm)
 
             return AgentResponse(
                 response=final_text,
@@ -154,15 +165,18 @@ async def _run_agent(session_id: str, user_message: str) -> AgentResponse:
 
         # Tool dispatch — process each tool call
         # Add the assistant message with tool_calls
-        assistant_msg = {"role": "assistant", "content": response.content, "tool_calls": []}
-        for tc in response.tool_calls:
-            assistant_msg["tool_calls"].append(
+        assistant_msg: ChatMessage = {
+            "role": "assistant",
+            "content": response.content,
+            "tool_calls": [
                 {
                     "id": tc.id,
                     "type": "function",
                     "function": {"name": tc.function.name, "arguments": tc.function.arguments},
                 }
-            )
+                for tc in response.tool_calls
+            ],
+        }
         if response.provider_items:
             # Responses API: reasoning items (+ the exact function calls) must go
             # back on the next call so the model keeps its chain of thought.
@@ -221,7 +235,7 @@ async def _run_agent(session_id: str, user_message: str) -> AgentResponse:
         response=final_text,
         tool_calls_made=tools_called,
         products_found=products_found,
-        suggestions=await generate_suggestions(messages),
+        suggestions=await generate_suggestions(messages, llm),
         trace_url=await _current_trace_url(),
         step_count=step_count,
         total_tokens=total_tokens,
@@ -237,7 +251,7 @@ STEP_LIMIT_NOTE = (
 
 
 async def _answer_from_research(
-    llm, messages: list[dict], tools_schema: list[dict], products_found: list[dict]
+    llm: LLMAdapter, messages: list[ChatMessage], tools_schema: list[JSONObject], products_found: list[JSONObject]
 ) -> tuple[str, int]:
     """Final answer after hitting max_agent_steps. Falls back to listing the
     search results if even this call fails, so the user always gets something."""
@@ -257,7 +271,7 @@ async def _answer_from_research(
     return _results_fallback(products_found), 0
 
 
-def _results_fallback(products_found: list[dict]) -> str:
+def _results_fallback(products_found: list[JSONObject]) -> str:
     lines = [f"- [{p.get('title') or p['url']}]({p['url']})" for p in products_found[:5] if p.get("url")]
     if not lines:
         return "I couldn't finish researching this one. Could you tell me more about what you're looking for, such as a budget, brand, or must-have feature?"
@@ -269,7 +283,7 @@ def _results_fallback(products_found: list[dict]) -> str:
     )
 
 
-def _replay_history(history: list[dict]) -> list[dict]:
+def _replay_history(history: list[MessageRow]) -> list[ChatMessage]:
     """Past turns as plain user/assistant text.
 
     The DB stores tool results but not the assistant messages that requested
@@ -281,7 +295,9 @@ def _replay_history(history: list[dict]) -> list[dict]:
     A history window can also start mid-turn (it's the newest N rows), so drop
     anything before the first user message.
     """
-    turns = [{"role": m["role"], "content": m["content"]} for m in history if m["role"] in ("user", "assistant")]
+    turns: list[ChatMessage] = [
+        {"role": m["role"], "content": m["content"]} for m in history if m["role"] in ("user", "assistant")
+    ]
     while turns and turns[0]["role"] != "user":
         turns.pop(0)
     return turns
@@ -337,6 +353,7 @@ async def _current_trace_url() -> str | None:
 if __name__ == "__main__":
     # Smoke test against a throwaway DB (your real shopsense.db is untouched).
     # Sends a real trace to Langfuse. From the project root:  python -m app.agent.core
+    import io
     import sys
     import tempfile
     from pathlib import Path
@@ -344,7 +361,8 @@ if __name__ == "__main__":
     from app.db.database import close_db, init_db
     from app.tracing.langfuse_setup import shutdown_langfuse
 
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
     async def _smoke_test() -> None:
         with tempfile.TemporaryDirectory() as tmp:
