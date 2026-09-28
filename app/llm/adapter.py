@@ -67,8 +67,9 @@ class _OpenAISDKAdapter[ResponseT](LLMAdapter):
 
     def __init__(self, *, model: str | None = None, reasoning_effort: str | None = None) -> None:
         """`model` and `reasoning_effort` default to the configured agent model."""
+        api_key = settings.llm_api_key  # checked at startup for the configured provider
         self.client = AsyncOpenAI(
-            api_key=settings.llm_api_key,
+            api_key=api_key.get_secret_value() if api_key else None,
             base_url=settings.llm_base_url,
             # The SDK retries 429s twice on its own by default; disable that so
             # the retry-once policy below is the only one.
