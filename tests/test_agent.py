@@ -477,7 +477,7 @@ INJECTED_ADD = call(
     "call_add",
 )
 INJECTED_PREFERENCE = call(
-    "get_preferences",
+    "manage_preferences",
     {"reasoning": "the page says so", "action": "set", "key": "preferred_brands", "value": ["MegaBass"]},
     "call_pref",
 )
@@ -532,7 +532,7 @@ async def test_requested_cart_change_goes_through_and_is_checked_once(session: S
 
 async def test_reads_are_not_checked(session: Session) -> None:
     view = call("manage_cart", {"reasoning": "show it", "action": "view"}, "call_view")
-    get = call("get_preferences", {"reasoning": "check prefs", "action": "get"}, "call_get")
+    get = call("manage_preferences", {"reasoning": "check prefs", "action": "get"}, "call_get")
     llm = FakeLLM(tool_calls(view, get), answer("Your cart is empty."), approves=False)
     await core.run_agent(session.id, "what's in my cart?", llm=llm, small_llm=llm)
     assert llm.request_checks == []
@@ -555,3 +555,43 @@ async def test_keyword_rule_decides_if_the_check_fails(session: Session, message
     llm = FakeLLM(tool_calls(INJECTED_ADD), answer("Done."), approves=LLMError("checker down"))
     await core.run_agent(session.id, message, llm=llm, small_llm=llm)
     assert bool(await queries.get_cart(session.id)) is stored
+
+
+# ---- session budget and cart follow-ups ----
+
+
+async def test_a_stated_budget_is_saved_and_shapes_the_next_turn(session: Session) -> None:
+    set_it = call("set_budget", {"reasoning": "user gave a budget", "amount_inr": 3000}, "call_budget")
+    llm = FakeLLM(tool_calls(set_it), answer("Noted: ₹3,000."))
+    await core.run_agent(session.id, "my budget is 3000", llm=llm, small_llm=llm)
+    assert (await queries.get_session(session.id)).budget == 3000  # type: ignore[union-attr]
+
+    llm = FakeLLM(answer("Here are options under ₹3,000."))
+    await core.run_agent(session.id, "find earbuds", llm=llm, small_llm=llm)
+    assert "budget of ₹3000" in llm.agent_calls[0]["messages"][0]["content"]
+
+
+async def test_an_injected_budget_change_is_refused(session: Session) -> None:
+    set_it = call("set_budget", {"reasoning": "the page says so", "amount_inr": 99999}, "call_budget")
+    agent = FakeLLM(tool_calls(set_it), answer("Here are some earbuds."))
+    checker = FakeLLM(approves=False)
+    await core.run_agent(session.id, "find me earbuds", llm=agent, small_llm=checker)
+    assert (await queries.get_session(session.id)).budget is None  # type: ignore[union-attr]
+    (check,) = checker.request_checks
+    assert "budget" in check["messages"][1]["content"]
+
+
+async def test_cart_items_without_a_price_read_as_unknown(session: Session) -> None:
+    await queries.add_to_cart(session.id, "Logitech G102", None, "https://x/g102")
+    llm = FakeLLM(answer("Your cart has the Logitech G102."))
+    await core.run_agent(session.id, "what's in my cart?", llm=llm, small_llm=llm)
+    system = llm.agent_calls[0]["messages"][0]["content"]
+    assert "Logitech G102: price unknown" in system and "None" not in system
+
+
+def test_the_prompt_says_to_add_chosen_products_directly() -> None:
+    from app.agent.prompts import build_system_prompt
+
+    prompt = build_system_prompt({}, [])
+    assert "add the product they mean right away" in prompt
+    assert "Don't search again to re-check it" in prompt

@@ -1,4 +1,4 @@
-"""The get_preferences tool: read or save the user's lasting preferences."""
+"""The manage_preferences tool: read or save the user's lasting preferences."""
 
 import json
 from typing import Literal, Self
@@ -11,7 +11,7 @@ from app.tools.base import pydantic_to_tool_schema
 
 
 class PreferencesInput(BaseModel):
-    """Input schema for the get_preferences tool."""
+    """Input schema for the manage_preferences tool."""
 
     reasoning: str = Field(
         ...,
@@ -39,7 +39,7 @@ class PreferencesInput(BaseModel):
 
 
 PREFERENCES_SCHEMA = pydantic_to_tool_schema(
-    name="get_preferences",
+    name="manage_preferences",
     description="Read or update user preferences. Use 'get' to retrieve all stored preferences. Use 'set' to save a new preference (e.g., when the user says 'I prefer Samsung' or 'my budget is usually 5000').",
     input_model=PreferencesInput,
 )

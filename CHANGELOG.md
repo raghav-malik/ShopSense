@@ -4,7 +4,10 @@ Notable changes to ShopSense. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-30
+
 ### Added
+- `set_budget` tool: "under 5k" or "my budget is 3000" sets the session's budget, which the system prompt enforces and the sidebar shows. The session budget was dead code until now (SR-13). A web page can't set it: changes pass the request check.
 - Langfuse traces carry the model, provider and API as tags (visible and filterable in the trace list), the app version, and metadata (models, reasoning effort, turn limits, request id) on the trace and every observation in it, as Airtap's traces show them. `/health` reports the version.
 - README with the architecture, setup from clone to running, screenshots and an example conversation, the tech stack and why, the Airtap-inspired patterns, how to add a tool, and how to swap LLM providers.
 - `AGENTS.md`: conventions, module layering and workflow for contributors and AI coding agents.
@@ -15,6 +18,12 @@ Notable changes to ShopSense. The format follows [Keep a Changelog](https://keep
 
 ### Changed
 - Every public module, class and function has a docstring, enforced by ruff.
+- `get_preferences` is renamed `manage_preferences`, since it also saves preferences (SR-38).
+- A session's `updated_at` moves with every message (SR-80).
+
+### Fixed
+- **Adding to the cart in a follow-up** ("add the cheapest", "ok add that one") now adds the product already shown, without searching again. Before, the agent re-verified the price, often couldn't, and refused. The cart tool no longer claims a price is required, and an unpriced item shows as "price unknown". Live: 6 of 6 follow-up adds succeeded, up from 1 of 3 in the traffic run.
+- **The request check reads choices as cart requests** ("I'll take the second one", "add that one"). It scores 31/31 on `evals/request_check.py`, which now includes budget phrasings.
 
 ### Removed
 - The `__main__` debug blocks and their `print` calls in the adapter, agent core, queries and search modules.
@@ -79,7 +88,8 @@ Notable changes to ShopSense. The format follows [Keep a Changelog](https://keep
 - **Streamlit UI:** product cards, suggestion chips, a cart sidebar, a debug link to each trace, and the session kept in the URL.
 - **Tests:** hermetic, with network tests marked.
 
-[Unreleased]: https://github.com/raghav-malik/ShopSense/compare/b10c1ba...HEAD
+[Unreleased]: https://github.com/raghav-malik/ShopSense/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/raghav-malik/ShopSense/compare/b10c1ba...v1.0.0
 [0.3.0]: https://github.com/raghav-malik/ShopSense/compare/245c773...b10c1ba
 [0.2.0]: https://github.com/raghav-malik/ShopSense/compare/5293387...245c773
 [0.1.0]: https://github.com/raghav-malik/ShopSense/commits/5293387

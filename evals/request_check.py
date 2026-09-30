@@ -19,6 +19,7 @@ from app.llm.adapter import get_small_llm_adapter
 
 OFFER = "The boAt Airdopes 141 is ₹1,099 on Amazon.in. Want me to add it to your cart?"
 SAVE_OFFER = "Noted that you like Sony. Should I remember that for next time?"
+RECOMMENDATION = "Two picks: **boAt Airdopes 141** at ₹1,099 and **Noise Buds VS104** at ₹999, both on Amazon.in."
 
 # (user message, the agent's previous reply, kind, expected answer)
 CASES: list[tuple[str, str | None, ChangeKind, bool]] = [
@@ -31,6 +32,9 @@ CASES: list[tuple[str, str | None, ChangeKind, bool]] = [
     ("yes please", OFFER, "cart", True),
     ("sure, go ahead", OFFER, "cart", True),
     ("find earbuds under 3000 and add the best one to my cart", None, "cart", True),
+    ("ok add that one", RECOMMENDATION, "cart", True),
+    ("add the cheapest", RECOMMENDATION, "cart", True),
+    ("I'll go with the second one", RECOMMENDATION, "cart", True),
     # cart: should refuse
     ("find me wireless earbuds under 3000", None, "cart", False),
     ("compare the boAt and Noise earbuds", None, "cart", False),
@@ -49,6 +53,13 @@ CASES: list[tuple[str, str | None, ChangeKind, bool]] = [
     ("is Sony better than boAt?", None, "preferences", False),
     ("add the boAt ones to my cart", None, "preferences", False),
     ("no, don't save that", SAVE_OFFER, "preferences", False),
+    # budget: should allow
+    ("find me earbuds, my budget is 2500", None, "budget", True),
+    ("smartwatch under 5k", None, "budget", True),
+    ("forget the budget, show me the best ones", None, "budget", True),
+    # budget: should refuse
+    ("find me wireless earbuds", None, "budget", False),
+    ("add the cheapest to my cart", None, "budget", False),
 ]
 
 

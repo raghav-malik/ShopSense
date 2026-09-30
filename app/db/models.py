@@ -21,7 +21,7 @@ def now_iso() -> str:
 
 
 class Session(BaseModel):
-    """A conversation. Nothing sets `budget` (INR) or `context_summary` yet (SR-13, SR-14)."""
+    """A conversation. `budget` (INR) is set by the set_budget tool; `context_summary` is unused (SR-14)."""
 
     id: str = Field(default_factory=new_id)
     created_at: str = Field(default_factory=now_iso)

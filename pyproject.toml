@@ -1,6 +1,6 @@
 [project]
 name = "shopsense"
-version = "0.3.0"
+version = "1.0.0"
 description = "Personal shopping concierge agent: FastAPI + a ReAct LLM agent + Streamlit, traced with Langfuse"
 readme = "README.md"
 requires-python = ">=3.12"

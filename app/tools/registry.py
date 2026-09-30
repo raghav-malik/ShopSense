@@ -7,6 +7,7 @@ from typing import NamedTuple
 from pydantic import BaseModel, ValidationError
 
 from app.llm.types import JSONObject
+from app.tools.budget import BUDGET_SCHEMA, SetBudgetInput, set_budget
 from app.tools.cart import CART_SCHEMA, ManageCartInput, manage_cart
 from app.tools.compare import COMPARE_SCHEMA, CompareProductsInput, compare_products
 from app.tools.extract import EXTRACT_SCHEMA, ExtractProductInput, extract_product_info
@@ -29,7 +30,8 @@ TOOL_MAP: dict[str, ToolSpec] = {
     "extract_product_info": ToolSpec(extract_product_info, EXTRACT_SCHEMA, ExtractProductInput, needs_session=False),
     "compare_products": ToolSpec(compare_products, COMPARE_SCHEMA, CompareProductsInput, needs_session=False),
     "manage_cart": ToolSpec(manage_cart, CART_SCHEMA, ManageCartInput, needs_session=True),
-    "get_preferences": ToolSpec(handle_preferences, PREFERENCES_SCHEMA, PreferencesInput, needs_session=False),
+    "manage_preferences": ToolSpec(handle_preferences, PREFERENCES_SCHEMA, PreferencesInput, needs_session=False),
+    "set_budget": ToolSpec(set_budget, BUDGET_SCHEMA, SetBudgetInput, needs_session=True),
 }
 
 # Fields that exist for the LLM's benefit and never reach an executor. `reasoning`

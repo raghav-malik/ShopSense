@@ -6,6 +6,7 @@ import json
 import pytest
 from ddgs.exceptions import DDGSException, RatelimitException
 
+from app.db import queries
 from app.llm.types import JSONObject
 from app.tools import registry, search
 from app.tools.cart import manage_cart
@@ -208,7 +209,7 @@ async def test_cart_add_without_url_fails_validation_with_json_error(db: None) -
     assert "expected_schema" in result
 
 
-# ---- get_preferences (real SQLite) ----
+# ---- manage_preferences (real SQLite) ----
 
 
 async def test_preferences_set_and_get(db: None) -> None:
@@ -265,7 +266,8 @@ def test_tool_schemas_are_openai_function_format() -> None:
         "extract_product_info",
         "compare_products",
         "manage_cart",
-        "get_preferences",
+        "manage_preferences",
+        "set_budget",
     ]
     for s in schemas:
         params = s["function"]["parameters"]
@@ -274,3 +276,29 @@ def test_tool_schemas_are_openai_function_format() -> None:
         assert "title" not in params
     cart_props = schemas[3]["function"]["parameters"]["properties"]
     assert "session_id" not in cart_props  # injected server-side, hidden from the LLM
+
+
+# ---- set_budget (real SQLite) ----
+
+
+async def test_set_and_clear_the_session_budget(db: None) -> None:
+    session = await queries.create_session()
+    result = await run("set_budget", {"amount_inr": 5000}, session.id)
+    assert result == {"budget_inr": 5000.0, "message": "Budget set to ₹5,000 for this session."}
+    assert (await queries.get_session(session.id)).budget == 5000.0  # type: ignore[union-attr]
+    assert (await run("set_budget", {"amount_inr": None}, session.id))["budget_inr"] is None
+    assert (await queries.get_session(session.id)).budget is None  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("amount", [0, -100, "lots"])
+async def test_set_budget_rejects_invalid_amounts(db: None, amount: object) -> None:
+    assert (await run("set_budget", {"amount_inr": amount}))["error"] == "validation_failed"
+
+
+async def test_saving_a_message_marks_the_session_updated(db: None) -> None:
+    from app.db.models import Message
+
+    session = await queries.create_session()
+    later = "2099-01-01T00:00:00+00:00"
+    await queries.save_message(Message(session_id=session.id, role="user", content="hi", created_at=later))
+    assert (await queries.get_session(session.id)).updated_at == later  # type: ignore[union-attr]  # SR-80

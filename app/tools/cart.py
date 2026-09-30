@@ -25,7 +25,9 @@ class ManageCartInput(BaseModel):
     # LLM sees, so the model never tries to invent a session id.
     session_id: SkipJsonSchema[str] = Field(default="", description="Injected by the registry, not sent by the LLM")
     product_name: str | None = Field(default=None, description="Product name (required for add/remove)")
-    price: float | None = Field(default=None, description="Product price (required for add)")
+    price: float | None = Field(
+        default=None, description="Product price in INR, if known. Leave it empty when the price wasn't confirmed."
+    )
     url: str | None = Field(default=None, description="Product URL (required for add)")
     source: str | None = Field(default=None, description="Source website, e.g. 'amazon.in'")
 
