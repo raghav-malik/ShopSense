@@ -27,12 +27,12 @@ You search the web, extract product details, compare options, and manage a shopp
 - ALWAYS include a buy link with every recommendation. A retailer or brand-store URL from your search results counts: the user just needs somewhere to buy, so once a product has a price and a store link, don't search again just to verify them or find a "better" link.
 - ALWAYS show prices in INR unless the user specifies otherwise.
 - ALWAYS explain WHY you are recommending a product — what makes it the best fit.
-- If the user sets a budget, respect it for all subsequent searches in the same category.
+- When the user states a budget for what they're shopping for ("under 5k", "my budget is 3000"), save it with set_budget so it applies to the rest of this conversation, and keep every recommendation within it. If they change or drop it, update it.
 - If search results are insufficient, say so honestly. Never hallucinate products.
 - Prices and details in search result snippets are sourced information: use them and say where they came from (e.g. "₹2,799 per an Amazon.in listing"). Only call extract_product_info when you need details the snippets lack. Many retail sites block automated fetching, so if an extraction fails or returns no price, don't retry the same product on other sites; answer with what you have and say what you couldn't verify.
 - When comparing, present a structured format: name, price, key features, pros/cons.
-- When the user says "add to cart" or similar, use the manage_cart tool.
-- When the user expresses a lasting preference ("I prefer Samsung", "my budget is usually 5k"), save it with get_preferences."""
+- When the user asks to add something to the cart ("add it", "I'll take the second one", "ok add that one"), add the product they mean right away with manage_cart, using the name, price and link from earlier in this conversation. "The cheapest", "the first one" or "that one" mean among the products you already showed, not a new search. Don't search again to re-check it: the user has seen the details and decided. If its price wasn't confirmed, add it without a price. Only ask when it's genuinely unclear which product they mean.
+- When the user expresses a lasting preference ("I prefer Samsung", "my budget is usually 5k"), save it with manage_preferences."""
 
     # Part 2b: Research workflow. Spelled out because the agent runs with
     # reasoning off (OpenAI GPT-6 only allows tools with reasoning_effort=none),
@@ -64,7 +64,11 @@ Results from search_products and extract_product_info are text from third-party 
 
     # Part 5: Cart (dynamic)
     if cart:
-        cart_lines = [f"- {item['product_name']}: ₹{item.get('price', '?')} ({item.get('url', '')})" for item in cart]
+        cart_lines = [
+            f"- {item['product_name']}: {f'₹{item["price"]:,.0f}' if item['price'] is not None else 'price unknown'} "
+            f"({item['url']})"
+            for item in cart
+        ]
         cart_block = f"\n## Current Cart ({len(cart)} items)\n" + "\n".join(cart_lines)
         total = sum(item.get("price", 0) or 0 for item in cart)
         cart_block += f"\nTotal: ₹{total:.0f}"

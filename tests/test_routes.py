@@ -188,6 +188,16 @@ def test_cart_empty(client: TestClient, session_id: str) -> None:
     assert response.status_code == 200
     assert response.json()["items"] == []
     assert response.json()["total"] == 0
+    assert response.json()["budget"] is None
+
+
+def test_cart_reports_the_session_budget(client: TestClient, session_id: str) -> None:
+    import asyncio
+
+    from app.db import queries
+
+    asyncio.run(queries.update_session_budget(session_id, 3000))
+    assert client.get(f"/sessions/{session_id}/cart").json()["budget"] == 3000
 
 
 def test_cart_nonexistent_session(client: TestClient) -> None:

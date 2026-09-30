@@ -25,18 +25,19 @@ A personal shopping concierge. Tell it what you're looking for ("wireless earbud
 ## What it does
 
 - **Researches, not guesses.** The agent searches first, runs targeted searches for promising models, and reads product pages when it needs details. It recommends specific products with the price and the store it found them in. It never invents prices or links.
-- **Five tools:**
+- **Six tools:**
   - `search_products`: web search.
   - `extract_product_info`: reads a product page's structured data.
   - `compare_products`: builds a comparison table.
-  - `manage_cart`: adds, removes, shows and clears items.
-  - `get_preferences`: remembers brands, budget and sizes.
+  - `manage_cart`: adds, removes, shows and clears items. "Add that one" adds the product it already showed you, with no new search.
+  - `manage_preferences`: remembers brands, sizes and your usual budget, across sessions.
+  - `set_budget`: "under 5k" or "my budget is 3000" sets the budget for this conversation. The sidebar shows it, and every later recommendation stays within it.
 - **Suggests what to ask next.** Two or three follow-ups appear as buttons under each answer, after the answer is already on screen.
 - **Stays within limits.** Each turn has a step limit, a token budget and a cost budget. The agent doesn't repeat identical tool calls. If it hits a limit, it answers from what it found rather than failing.
 - **Treats the web as untrusted.**
   - Page text is labelled as data, not instructions, and hidden characters are stripped.
   - Answers can't contain images, which could leak data.
-  - The cart and preferences change only when *you* ask; a separate check verifies that.
+  - The cart, preferences and budget change only when *you* ask; a separate check verifies that.
   - Product pages are fetched only from public addresses.
 - **Fully traced.** Each turn is one Langfuse trace, with a generation per LLM call (input, output, tokens, cost) and an observation per tool call, including the model's stated reason for calling it. Every trace is tagged with its model, provider and API, carries the app version, and has the model settings and turn limits in its metadata.
 
@@ -61,8 +62,8 @@ flowchart LR
 1. **The UI posts the message.** `POST /sessions/{id}/chat`. The API gives the request an id (`X-Request-ID`) and picks a Langfuse trace id up front, so even a failed turn can link to its trace.
 2. **`run_agent()` loads the context:** recent history, your preferences, the cart and the budget. It builds the system prompt from them.
 3. **The ReAct loop runs,** up to `MAX_AGENT_STEPS` times, within the token and cost budget:
-   - One LLM call with the five tool schemas.
-   - If the model asks for tools, they run. Web tools run in parallel, and cart and preference tools run in order. Cart and preference *changes* first pass the request check.
+   - One LLM call with the six tool schemas.
+   - If the model asks for tools, they run. Web tools run in parallel, and cart, preference and budget tools run in order. Changes to the cart, preferences or budget first pass the request check.
    - The results go back to the model.
    - The loop ends when the model answers in text.
 4. **At a limit, the agent still answers.** If the step limit or a budget is reached, one final call with tools disabled answers from what was gathered.
@@ -75,8 +76,8 @@ flowchart LR
 | --- | --- |
 | `app/main.py` | App startup and shutdown, routes, error handling, request ids, `/livez` `/readyz` `/health` |
 | `app/routes/` | Session, chat, suggestions, cart and history endpoints; one error format (`errors.py`) |
-| `app/agent/` | The ReAct loop (`core.py`), system prompt, suggestions, the request check for cart and preference changes, turn budgets and the repeat guard |
-| `app/tools/` | The five tools, the schema builder, the registry that validates and dispatches tool calls, and web-content cleaning (`untrusted.py`) |
+| `app/agent/` | The ReAct loop (`core.py`), system prompt, suggestions, the request check for cart, preference and budget changes, turn budgets and the repeat guard |
+| `app/tools/` | The six tools, the schema builder, the registry that validates and dispatches tool calls, and web-content cleaning (`untrusted.py`) |
 | `app/llm/` | One interface over OpenAI Chat Completions, the OpenAI Responses API, Gemini and Groq; retries; provider-agnostic errors |
 | `app/db/` | aiosqlite connection, models and queries |
 | `app/tracing/` | Langfuse client with PII and key masking; the per-call generation handle |
@@ -430,7 +431,7 @@ uv run python -m evals.request_check    # live: does the request check read real
   - Web results are labelled as third-party content, not instructions.
   - Invisible characters are stripped: tag characters, zero-width characters and variation selectors.
   - Images are removed from answers.
-  - Cart and preference changes need the user's say-so, checked by a separate model call that sees only the user's message.
+  - Cart, preference and budget changes need the user's say-so, checked by a separate model call that sees only the user's message.
   - `evals/prompt_injection.py` measures all of this against a real model.
 - **Secrets.**
   - Keys are `SecretStr`, and traces are masked for emails, key patterns, and the configured keys by value.

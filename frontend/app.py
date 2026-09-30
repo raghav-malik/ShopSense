@@ -232,6 +232,8 @@ with st.sidebar:
             st.write(f"**Total: ₹{cart['total']:,.0f}**")
         else:
             st.write("Empty")
+        if cart.get("budget"):
+            st.caption(f"Budget for this session: ₹{cart['budget']:,.0f}")
     except ApiError:
         st.write("Cart unavailable")
 

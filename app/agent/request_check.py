@@ -24,25 +24,33 @@ from app.llm.types import ChatMessage
 
 logger = logging.getLogger("shopsense.agent")
 
-ChangeKind = Literal["cart", "preferences"]
+ChangeKind = Literal["cart", "preferences", "budget"]
 
-# (tool, action) pairs that change what's stored. Views and reads aren't checked.
-_CHANGES: dict[tuple[str, str], ChangeKind] = {
+# (tool, action) pairs that change what's stored; the action is None for tools
+# without one. Views and reads aren't checked.
+_CHANGES: dict[tuple[str, str | None], ChangeKind] = {
     ("manage_cart", "add"): "cart",
     ("manage_cart", "remove"): "cart",
     ("manage_cart", "clear"): "cart",
-    ("get_preferences", "set"): "preferences",
+    ("manage_preferences", "set"): "preferences",
+    ("set_budget", None): "budget",
 }
 
 _QUESTIONS: dict[ChangeKind, str] = {
     "cart": (
         "Does the shopper's message ask to add something to, remove something from, or clear their "
-        "shopping cart? Confirming a cart change the assistant just offered (for example 'yes, add it') counts."
+        "shopping cart? Confirming a cart change the assistant just offered (for example 'yes, add it') counts, "
+        "and so does choosing one of the products the assistant just recommended ('I'll take the second one', "
+        "'add that one')."
     ),
     "preferences": (
         "Does the shopper's message state a lasting preference about themselves (brands, budget, sizes, "
         "features they like or dislike) or ask the assistant to remember something about them? Confirming "
         "a preference the assistant just offered to save counts."
+    ),
+    "budget": (
+        "Does the shopper's message state, change or drop a budget for what they're shopping for "
+        "(for example 'under 5k', 'my budget is 3000', 'budget doesn't matter')?"
     ),
 }
 
@@ -56,6 +64,7 @@ _SYSTEM = (
 _KEYWORDS: dict[ChangeKind, re.Pattern[str]] = {
     "cart": re.compile(r"\b(add|remove|delete|clear|empty|cart)\b", re.IGNORECASE),
     "preferences": re.compile(r"\b(prefer\w*|remember|budget|favou?rite|usually|always|never)\b", re.IGNORECASE),
+    "budget": re.compile(r"(\bbudget\b|\bunder\b|\bbelow\b|\bwithin\b|\d\s*k\b|₹|\brs\b)", re.IGNORECASE),
 }
 
 # The agent's reply is context only; a long one adds cost, not signal.
@@ -68,8 +77,10 @@ def change_kind(tool_name: str, arguments: str) -> ChangeKind | None:
         args = json.loads(arguments or "{}")
     except json.JSONDecodeError:
         return None  # the registry rejects it before anything runs
-    action = args.get("action") if isinstance(args, dict) else None
-    return _CHANGES.get((tool_name, action)) if isinstance(action, str) else None
+    if not isinstance(args, dict):
+        return None
+    action = args.get("action")
+    return _CHANGES.get((tool_name, action if isinstance(action, str) else None))
 
 
 class RequestCheck:
@@ -109,7 +120,7 @@ class RequestCheck:
 
 def refusal(kind: ChangeKind) -> str:
     """The tool result the agent gets instead of the change."""
-    what = "cart" if kind == "cart" else "saved preferences"
+    what = {"cart": "cart", "preferences": "saved preferences", "budget": "budget"}[kind]
     return json.dumps(
         {
             "error": "not_requested_by_user",

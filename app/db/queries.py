@@ -37,8 +37,8 @@ async def get_session(session_id: str) -> Session | None:
     )
 
 
-async def update_session_budget(session_id: str, budget: float) -> None:
-    """Set the session's budget (INR)."""
+async def update_session_budget(session_id: str, budget: float | None) -> None:
+    """Set the session's budget (INR), or clear it with None."""
     db = await get_db()
     await db.execute(
         "UPDATE sessions SET budget = ?, updated_at = ? WHERE id = ?",
@@ -51,7 +51,7 @@ async def update_session_budget(session_id: str, budget: float) -> None:
 
 
 async def save_message(msg: Message) -> None:
-    """Store a message."""
+    """Store a message and mark the session as updated."""
     db = await get_db()
     await db.execute(
         """INSERT INTO messages (id, session_id, role, content, tool_name, tool_call_id, created_at, token_count)
@@ -67,6 +67,7 @@ async def save_message(msg: Message) -> None:
             msg.token_count,
         ),
     )
+    await db.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (msg.created_at, msg.session_id))
     await db.commit()
 
 

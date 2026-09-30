@@ -119,22 +119,23 @@ class CartItemOut(BaseModel):
 
 
 class CartResponse(BaseModel):
-    """The session's cart and its total."""
+    """The session's cart, its total, and the session's budget if one is set."""
 
     items: list[CartItemOut]
     total: float
     currency: str = "INR"
+    budget: float | None = None
 
 
 @router.get("/cart")
 async def get_cart(session_id: str) -> CartResponse:
     """Get the current cart for a session."""
-    await _require_session(session_id)
+    session = await _require_session(session_id)
 
     cart = await queries.get_cart(session_id)
     items = [CartItemOut(product_name=i["product_name"], price=i["price"], url=i["url"]) for i in cart]
     total = sum(i["price"] or 0 for i in cart)
-    return CartResponse(items=items, total=total)
+    return CartResponse(items=items, total=total, budget=session.budget)
 
 
 class SessionInfo(BaseModel):
