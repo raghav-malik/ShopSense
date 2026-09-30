@@ -38,7 +38,7 @@ A personal shopping concierge. Tell it what you're looking for ("wireless earbud
   - Answers can't contain images, which could leak data.
   - The cart and preferences change only when *you* ask; a separate check verifies that.
   - Product pages are fetched only from public addresses.
-- **Fully traced.** Each turn is one Langfuse trace, with a generation per LLM call (input, output, tokens, cost) and an observation per tool call, including the model's stated reason for calling it.
+- **Fully traced.** Each turn is one Langfuse trace, with a generation per LLM call (input, output, tokens, cost) and an observation per tool call, including the model's stated reason for calling it. Every trace is tagged with its model, provider and API, carries the app version, and has the model settings and turn limits in its metadata.
 
 ## Architecture
 

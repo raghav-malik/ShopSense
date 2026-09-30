@@ -5,6 +5,7 @@ Notable changes to ShopSense. The format follows [Keep a Changelog](https://keep
 ## [Unreleased]
 
 ### Added
+- Langfuse traces carry the model, provider and API as tags (visible and filterable in the trace list), the app version, and metadata (models, reasoning effort, turn limits, request id) on the trace and every observation in it, as Airtap's traces show them. `/health` reports the version.
 - README with the architecture, setup from clone to running, screenshots and an example conversation, the tech stack and why, the Airtap-inspired patterns, how to add a tool, and how to swap LLM providers.
 - `AGENTS.md`: conventions, module layering and workflow for contributors and AI coding agents.
 - Architecture decision records in `docs/adr/`.

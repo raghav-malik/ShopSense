@@ -9,8 +9,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main_module
-from app.agent import core
+from app.agent.trace_attributes import trace_attributes
 from app.db import queries
+from app.llm.adapter import ChatCompletionsAdapter
 from app.main import app
 from app.request_context import JsonFormatter, RequestIdFilter, current_request_id, request_id_var
 
@@ -100,12 +101,15 @@ def test_probes_are_not_logged_at_info(client: TestClient, logs: Collect) -> Non
 
 
 def test_agent_traces_carry_the_request_id() -> None:
+    llm = ChatCompletionsAdapter()
     token = request_id_var.set("req-99")
     try:
-        assert core._request_metadata() == {"request_id": "req-99"}
+        inside = trace_attributes(trace_name="run-agent", session_id="s", llm=llm)
     finally:
         request_id_var.reset(token)
-    assert core._request_metadata() is None  # outside a request (scripts, evals)
+    assert inside["metadata"]["request_id"] == "req-99"
+    outside = trace_attributes(trace_name="run-agent", session_id="s", llm=llm)
+    assert "request_id" not in outside["metadata"]  # scripts and evals have no request
 
 
 # ---- unhandled errors ----

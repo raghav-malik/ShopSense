@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+from app import __version__
 from app.config import settings
 from app.db.database import close_db, get_db, init_db
 from app.request_context import RequestContextMiddleware, configure_logging
@@ -58,7 +59,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(
     title="ShopSense",
     description="Personal Shopping Concierge Agent API",
-    version="0.3.0",
+    version=__version__,
     lifespan=lifespan,
 )
 
@@ -127,6 +128,7 @@ async def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "service": "shopsense",
+        "version": __version__,
         "llm": f"{settings.llm_provider}/{settings.llm_model}",
         "llm_small": f"{settings.llm_provider}/{settings.llm_small_model}",
         "langfuse_url": getattr(app.state, "langfuse_project_url", None) or settings.langfuse_base_url,
