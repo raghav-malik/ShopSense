@@ -4,10 +4,10 @@ import re
 
 from langfuse import propagate_attributes
 
+from app.agent.trace_attributes import trace_attributes
 from app.db.models import MessageRow
 from app.llm.adapter import LLMAdapter, get_small_llm_adapter
 from app.llm.types import ChatMessage
-from app.request_context import current_request_id
 from app.tracing.langfuse_setup import get_langfuse
 
 SUGGESTIONS_SYSTEM_PROMPT = """You are a follow-up suggestion generator for a shopping assistant.
@@ -35,17 +35,14 @@ async def suggest_follow_ups(session_id: str, history: list[MessageRow], llm: LL
     messages: list[ChatMessage] = [
         {"role": m["role"], "content": m["content"]} for m in history if m["role"] in ("user", "assistant")
     ]
+    llm = llm or get_small_llm_adapter()
     langfuse = get_langfuse()
     with (
-        propagate_attributes(
-            session_id=session_id,
-            trace_name="suggest-follow-ups",
-            metadata={"request_id": rid} if (rid := current_request_id()) else None,
-        ),
+        propagate_attributes(**trace_attributes(trace_name="suggest-follow-ups", session_id=session_id, llm=llm)),
         langfuse.start_as_current_observation(as_type="span", name="suggest-follow-ups") as span,
     ):
         span.update(input=messages[-1]["content"] if messages else None)
-        suggestions = await generate_suggestions(messages, llm or get_small_llm_adapter())
+        suggestions = await generate_suggestions(messages, llm)
         span.update(output=suggestions)
     return suggestions
 

@@ -26,13 +26,13 @@ from app.agent.guardrails import RepeatGuard, TurnBudget, repeat_result
 from app.agent.prompts import build_system_prompt
 from app.agent.request_check import RequestCheck, change_kind, refusal
 from app.agent.schemas import AgentResponse
+from app.agent.trace_attributes import trace_attributes
 from app.config import settings
 from app.db import queries
 from app.db.models import Message, MessageRow
 from app.llm.adapter import LLMAdapter, get_llm_adapter, get_small_llm_adapter
 from app.llm.errors import LLMError
 from app.llm.types import PROVIDER_ITEMS_KEY, ChatMessage, JSONObject, ToolCall
-from app.request_context import current_request_id
 from app.tools.registry import TOOL_MAP, execute_tool, get_tool_schemas
 
 # Importing this module creates the Langfuse client. Import order doesn't matter:
@@ -77,10 +77,13 @@ async def run_agent(
     langfuse.update_current_span(input=user_message)
 
     # Everything inside (generations, tools, suggestions) inherits the session.
-    with propagate_attributes(session_id=session_id, trace_name="run-agent", metadata=_request_metadata()):
-        result = await _run_agent(
-            session_id, user_message, llm or get_llm_adapter(), small_llm or get_small_llm_adapter()
-        )
+    llm = llm or get_llm_adapter()
+    small_llm = small_llm or get_small_llm_adapter()
+    # Model, provider, limits and request id on the trace and every observation in it.
+    with propagate_attributes(
+        **trace_attributes(trace_name="run-agent", session_id=session_id, llm=llm, small_llm=small_llm)
+    ):
+        result = await _run_agent(session_id, user_message, llm, small_llm)
 
     langfuse.update_current_span(
         output=result.response,
@@ -251,12 +254,6 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
         total_tokens=budget.tokens,
         estimated_cost_usd=_cost(budget),
     )
-
-
-def _request_metadata() -> dict[str, str] | None:
-    """The HTTP request id on every observation, to match traces with log lines."""
-    request_id = current_request_id()
-    return {"request_id": request_id} if request_id else None
 
 
 def _cost(budget: TurnBudget) -> float | None:

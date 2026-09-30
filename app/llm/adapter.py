@@ -36,6 +36,10 @@ TRANSIENT_RETRY_WAIT_SECONDS = 2.0
 class LLMAdapter(ABC):
     """Base class for LLM providers. Subclass and implement chat()."""
 
+    def describe(self) -> dict[str, str]:
+        """How this adapter calls its model (model, provider, api, reasoning_effort), for traces."""
+        return {}
+
     @abstractmethod
     async def chat(
         self,
@@ -83,6 +87,16 @@ class _OpenAISDKAdapter[ResponseT](LLMAdapter):
         )
         self.model = model or settings.llm_model
         self.reasoning_effort = reasoning_effort or settings.llm_reasoning_effort
+
+    @override
+    def describe(self) -> dict[str, str]:
+        details = {
+            "model": self.model,
+            "provider": settings.llm_provider,
+            "api": self.api_name,
+            "reasoning_effort": self.reasoning_effort,
+        }
+        return {key: value for key, value in details.items() if value}
 
     # --- implemented per API ---
 
