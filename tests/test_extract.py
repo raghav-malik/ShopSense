@@ -97,6 +97,7 @@ async def test_json_ld_product_in_a_graph(serve: Callable[[Handler], None]) -> N
         "web_content_notice": WEB_CONTENT_NOTICE,  # labelled as third-party data
         "name": "boAt Airdopes 141",  # JSON-LD wins over Open Graph
         "price": "$19.99",  # AggregateOffer's lowPrice, currency symbol from the code
+        "price_source": "structured_data",
         "rating": "4.1 / 5 (2,310 reviews)",
         "features": ["42H playback", "ENx mics", "IPX4"],
         "buy_link": URL,
@@ -118,6 +119,7 @@ async def test_meta_description_fallback(serve: Callable[[Handler], None]) -> No
     serve(page('<title> Noise Buds VS104 </title><meta name="description" content="Buy now at Rs. 999 only">'))
     result = await extract_product_info(URL)
     assert result["name"] == "Noise Buds VS104" and result["price"] == "Rs. 999"
+    assert result["price_source"] == "page_description"  # not a price the live check trusts
 
 
 async def test_out_of_stock_and_unknown_currency(serve: Callable[[Handler], None]) -> None:
@@ -349,3 +351,30 @@ async def test_errors_are_not_labelled_as_web_content(serve: Callable[[Handler],
     serve(lambda request: httpx.Response(404))
     result = await extract_product_info(URL)
     assert result["error_type"] == "not_found" and "web_content_notice" not in result
+
+
+# ---- Amazon's buy box (Amazon pages have no JSON-LD or Open Graph price) ----
+
+
+def amazon_page(price_block: str, availability: str) -> Handler:
+    html = f"""<html><head><title>OnePlus Nord Buds 3r : Amazon.in: Electronics</title></head><body>
+    <div id="corePrice_feature_div"><span class="a-offscreen">₹1,949.00</span></div>
+    {price_block}
+    <div id="availability"><span>{availability}</span></div>
+    <div class="other-sellers"><span class="a-offscreen">₹999.00</span></div>
+    </body></html>"""
+    return lambda request: httpx.Response(200, html=html)
+
+
+async def test_amazon_buy_box_price_and_stock(serve: Callable[[Handler], None]) -> None:
+    buy_box = '<div id="tp_price_block_total_price_ww"><span class="a-offscreen">₹1,949.00</span></div>'
+    serve(amazon_page(buy_box, "In stock"))
+    result = await extract_product_info("https://www.amazon.in/OnePlus-Nord-Buds-3r/dp/B0D2NNLL45")
+    assert result["price"] == "₹1,949" and result["available"] is True  # not another seller's ₹999
+
+
+async def test_amazon_currently_unavailable(serve: Callable[[Handler], None]) -> None:
+    # The real wording also contains "in stock": unavailability must win.
+    serve(amazon_page("", "Currently unavailable. We don't know when or if this item will be back in stock."))
+    result = await extract_product_info("https://www.amazon.in/realme-Buds-Air-5/dp/B0CHRT3Q7N")
+    assert result["available"] is False

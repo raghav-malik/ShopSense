@@ -167,19 +167,49 @@ def _short(text: str, limit: int = 90) -> str:
     return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + " …"
 
 
+def price_badge(check: JSONObject) -> str:
+    """How far to trust a card's price: checked on the store page, or only from search results."""
+    store, live, stated = check["store"], check.get("live_price"), check.get("stated_price")
+    if check["status"] == "verified" and live is not None:
+        return f"✓ ₹{live:,.0f} · price checked on {store} just now"
+    if check["status"] == "corrected" and live is not None:
+        return f"✓ ₹{live:,.0f} · price checked on {store} just now (search results said ₹{stated:,.0f})"
+    if check["status"] == "unavailable":
+        return f"⚠ Currently unavailable on {store}"
+    if check["status"] == "search_page":
+        return f"This link is a search page on {store}, not a single product"
+    return "Price from search results; it couldn't be checked on the store"
+
+
 def render_assistant_extras(message: JSONObject, index: int) -> None:
-    """Product cards and the Langfuse debug panel under an answer."""
+    """Product cards (with how their price was checked) and the Langfuse debug panel under an answer."""
+    checks = {check["url"]: check for check in message.get("price_checks", [])}
     for n, product in enumerate(message.get("products", [])):
         icon = "🛒" if message.get("products_cited") else "🔎"
+        check = checks.get(product.get("url"))
         with st.expander(f"{icon} {_short(product.get('title') or 'Product')}"):
+            if check:
+                st.markdown(f"**{price_badge(check)}**")
             if product.get("snippet"):
+                # The snippet is the search engine's copy, so its price can be out of date.
                 st.write(product["snippet"])
             if product.get("source"):
-                st.caption(product["source"])
+                st.caption(product["source"] + (" · search result text" if check else ""))
             if product.get("url"):
-                label = "Buy Now →" if message.get("products_cited") else "View result →"
+                if check and check["status"] == "search_page":
+                    label = f"Search on {check['store']} →"
+                else:
+                    label = "Buy Now →" if message.get("products_cited") else "View result →"
                 # Keyed: the same product can appear in more than one answer.
                 st.link_button(label, product["url"], key=f"buy_{index}_{n}")
+
+    # Every product link in the answer, with its price as checked on the store page just now.
+    price_checks = message.get("price_checks", [])
+    if price_checks:
+        changed = any(c["status"] in ("corrected", "unavailable") for c in price_checks)
+        with st.expander("🏷️ Prices checked on the stores" + (" (some changed)" if changed else "")):
+            for check in price_checks:
+                st.markdown(f"- [{check.get('product') or check['store']}]({check['url']}): {price_badge(check)}")
 
     meta = message.get("meta")
     if meta and meta.get("trace_url"):
@@ -299,6 +329,7 @@ if prompt:
                 "content": result["response"],
                 "products": products,
                 "products_cited": cited,
+                "price_checks": result.get("price_checks", []),
                 "meta": {
                     k: result.get(k)
                     for k in ("trace_url", "step_count", "total_tokens", "estimated_cost_usd", "tool_calls_made")
