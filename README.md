@@ -29,9 +29,17 @@ A personal shopping concierge. Tell it what you're looking for ("wireless earbud
   - `search_products`: web search.
   - `extract_product_info`: reads a product page's structured data.
   - `compare_products`: builds a comparison table.
-  - `manage_cart`: adds, removes, shows and clears items. "Add that one" adds the product it already showed you, with no new search.
+  - `manage_cart`: adds, removes and clears items. "Add that one" adds the product it already showed you, with no new search.
   - `manage_preferences`: remembers brands, sizes and your usual budget, across sessions.
+  - The current cart, budget and preferences are always in the agent's context, so it never needs a tool call to look them up.
   - `set_budget`: "under 5k" or "my budget is 3000" sets the budget for this conversation. The sidebar shows it, and every later recommendation stays within it.
+- **Shopping only, with tools only when needed.**
+  - Greetings and thanks get a short reply.
+  - Off-topic requests (weather, coding, news, advice) get a polite "I can only help with shopping".
+  - Personal or upsetting messages get a kind reply, with no sales pitch and a pointer to people who can help when someone seems at risk.
+  - Illegal items are declined.
+  - Questions about what it already knows (your cart, your budget, products it just showed) are answered without new tool calls.
+  - `evals/scope.py` checks 28 such edge cases.
 - **Suggests what to ask next.** Two or three follow-ups appear as buttons under each answer, after the answer is already on screen.
 - **Stays within limits.** Each turn has a step limit, a token budget and a cost budget. The agent doesn't repeat identical tool calls. If it hits a limit, it answers from what it found rather than failing.
 - **Treats the web as untrusted.**
@@ -409,6 +417,7 @@ uv run lint-imports                     # module layering
 uv run python -m scripts.smoke_test     # one live turn (costs a fraction of a cent)
 uv run python -m evals.prompt_injection # live: do poisoned web pages steer the agent?
 uv run python -m evals.request_check    # live: does the request check read real phrasing right?
+uv run python -m evals.scope            # live: shopping-only behaviour, no unnecessary tool calls
 ```
 
 - **Tests are hermetic.** `tests/conftest.py` uses dummy keys, turns tracing off and gives each test a temporary database. The agent gets fake LLMs injected (`run_agent(..., llm=..., small_llm=...)`), and a safety net fails any test that would reach a real provider.

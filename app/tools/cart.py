@@ -1,4 +1,8 @@
-"""The manage_cart tool: add, remove, view or clear the session's cart."""
+"""The manage_cart tool: add, remove or clear items in the session's cart.
+
+There is no "view": the current cart is in the system prompt every turn, so
+looking it up would be a wasted tool call (evals/scope.py).
+"""
 
 from typing import Literal, Self
 
@@ -17,7 +21,7 @@ class ManageCartInput(BaseModel):
         ...,
         description="Explain WHY you are performing this cart action. What did the user ask for?",
     )
-    action: Literal["add", "remove", "view", "clear"] = Field(
+    action: Literal["add", "remove", "clear"] = Field(
         ...,
         description="Cart operation to perform",
     )
@@ -43,7 +47,7 @@ class ManageCartInput(BaseModel):
 
 CART_SCHEMA = pydantic_to_tool_schema(
     name="manage_cart",
-    description="Add, remove, view, or clear items in the user's shopping cart. Use 'add' when the user wants to save a product, 'view' to show cart contents, 'remove' to remove a specific product, 'clear' to empty the cart.",
+    description="Change the user's shopping cart: 'add' a product they chose, 'remove' a specific product, or 'clear' the cart. The current cart is already in your instructions, so don't use this to look it up.",
     input_model=ManageCartInput,
 )
 
@@ -81,17 +85,6 @@ async def manage_cart(
             "message": f"{'Removed' if removed else 'Could not find'} {product_name}.",
             "cart_size": len(cart),
             "total": total,
-        }
-
-    elif action == "view":
-        cart = await queries.get_cart(session_id)
-        total = sum(i.get("price", 0) or 0 for i in cart)
-        items = [{"name": i["product_name"], "price": i["price"], "url": i["url"]} for i in cart]
-        return {
-            "items": items,
-            "cart_size": len(items),
-            "total": total,
-            "currency": "INR",
         }
 
     elif action == "clear":

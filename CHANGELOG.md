@@ -4,6 +4,12 @@ Notable changes to ShopSense. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Fixed
+- **The agent stays a shopping assistant and calls tools only when needed.** Before this, a rule to always search first made it search the web for "hey", the weather, jokes, and even "a gun without a license"; it also read "how should I invest 10k" as a shopping budget. A new scope section in the system prompt covers small talk, off-topic requests, personal and upsetting messages (kind, no sales pitch, a pointer to help when someone seems at risk), illegal items, things it can't do (orders, tracking), and attempts to change its role. `evals/scope.py` (28 edge cases): 10/28 before the change, 82/84 across three runs after it.
+
+### Removed
+- **The cart tool's `view` action and the preferences tool's `get` action.** The current cart, budget and preferences are in the system prompt every turn, so looking them up was always a wasted tool call.
+
 ## [1.0.0] - 2026-09-30
 
 ### Added

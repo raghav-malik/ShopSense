@@ -180,9 +180,8 @@ async def test_cart_add_view_remove_clear(db: None) -> None:
     assert added == {"message": "Added boAt Airdopes 141 to cart.", "cart_size": 1, "total": 799.0, "currency": "INR"}
     await manage_cart("add", sid, product_name="Noise Buds", price=999, url="https://x/2")
 
-    view = await manage_cart("view", sid)
-    assert view["cart_size"] == 2 and view["total"] == 1798.0
-    assert [i["name"] for i in view["items"]] == ["boAt Airdopes 141", "Noise Buds"]
+    cart = await queries.get_cart(sid)
+    assert [(i["product_name"], i["price"]) for i in cart] == [("boAt Airdopes 141", 799.0), ("Noise Buds", 999.0)]
 
     removed = await manage_cart("remove", sid, product_name="Noise Buds")
     assert removed["message"] == "Removed Noise Buds." and removed["total"] == 799.0
@@ -198,7 +197,7 @@ async def test_cart_is_per_session(db: None) -> None:
 
     a, b = await queries.create_session(), await queries.create_session()
     await manage_cart("add", a.id, product_name="X", price=1, url="https://x")
-    assert (await manage_cart("view", b.id))["items"] == []
+    assert await queries.get_cart(b.id) == []
 
 
 async def test_cart_add_without_url_fails_validation_with_json_error(db: None) -> None:
@@ -212,12 +211,12 @@ async def test_cart_add_without_url_fails_validation_with_json_error(db: None) -
 # ---- manage_preferences (real SQLite) ----
 
 
-async def test_preferences_set_and_get(db: None) -> None:
+async def test_preferences_set_and_upsert(db: None) -> None:
     set_list = await handle_preferences("set", key="preferred_brands", value='["Samsung", "Sony"]')
     assert set_list["preferences"] == {"preferred_brands": ["Samsung", "Sony"]}
     # A bare string (not JSON) is stored as-is; a second set upserts.
     await handle_preferences("set", key="preferred_brands", value="Samsung")
-    assert await handle_preferences("get") == {"preferences": {"preferred_brands": "Samsung"}}
+    assert await queries.get_all_preferences() == {"preferred_brands": "Samsung"}
 
 
 # ---- registry ----
@@ -253,7 +252,9 @@ async def test_registry_strips_reasoning_and_injects_session(monkeypatch: pytest
     spec = registry.TOOL_MAP["manage_cart"]
     monkeypatch.setitem(registry.TOOL_MAP, "manage_cart", spec._replace(executor=fake_cart))
     await execute_tool(
-        "manage_cart", json.dumps({"reasoning": "user asked", "action": "view", "session_id": "hacked"}), "real-session"
+        "manage_cart",
+        json.dumps({"reasoning": "user asked", "action": "clear", "session_id": "hacked"}),
+        "real-session",
     )
     assert "reasoning" not in received
     assert received["session_id"] == "real-session"
