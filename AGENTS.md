@@ -56,6 +56,7 @@ app.config                                 settings
 - **Live checks:** `scripts/smoke_test.py` for one turn. Run the evals when changing the prompt, the model, or anything that shapes tool output:
   - `evals/prompt_injection.py`
   - `evals/request_check.py`
+  - `evals/scope.py`: shopping-only behaviour and no unnecessary tool calls
 
 ## Tracing (Langfuse)
 

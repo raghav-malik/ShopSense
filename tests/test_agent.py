@@ -430,13 +430,17 @@ async def test_session_tools_run_in_the_order_requested(session: Session) -> Non
         },
         "call_add",
     )
-    view = call("manage_cart", {"reasoning": "show the cart", "action": "view"}, "call_view")
-    llm = FakeLLM(tool_calls(add, view, search_call("call_s")), answer("Added."))
-    await core.run_agent(session.id, "add the Noise buds and show my cart", llm=llm, small_llm=llm)
+    remove = call(
+        "manage_cart",
+        {"reasoning": "user changed their mind", "action": "remove", "product_name": "Noise Buds VS104"},
+        "call_remove",
+    )
+    llm = FakeLLM(tool_calls(add, remove, search_call("call_s")), answer("Done."))
+    await core.run_agent(session.id, "add the Noise buds, actually no, remove them", llm=llm, small_llm=llm)
     tool_msgs = {
         m["tool_call_id"]: json.loads(m["content"]) for m in llm.agent_calls[1]["messages"] if m["role"] == "tool"
     }
-    assert "Noise Buds VS104" in json.dumps(tool_msgs["call_view"])  # the view saw the add
+    assert tool_msgs["call_remove"]["message"] == "Removed Noise Buds VS104."  # the remove saw the add
 
 
 async def test_suggestions_follow_up_on_the_saved_answer(session: Session) -> None:
@@ -530,12 +534,20 @@ async def test_requested_cart_change_goes_through_and_is_checked_once(session: S
     assert len(llm.request_checks) == 1  # cached for the rest of the turn
 
 
-async def test_reads_are_not_checked(session: Session) -> None:
+async def test_lookups_are_not_tools_the_cart_and_preferences_are_in_the_prompt(session: Session) -> None:
+    # 'view' and 'get' were wasted tool calls (evals/scope.py); they're gone, and
+    # the system prompt carries the current cart, budget and preferences.
+    await queries.add_to_cart(session.id, "boAt Airdopes 141", 1099, "https://www.amazon.in/dp/B09N3ZNHTY")
+    await queries.set_preference("preferred_brands", ["boAt"])
     view = call("manage_cart", {"reasoning": "show it", "action": "view"}, "call_view")
     get = call("manage_preferences", {"reasoning": "check prefs", "action": "get"}, "call_get")
-    llm = FakeLLM(tool_calls(view, get), answer("Your cart is empty."), approves=False)
+    llm = FakeLLM(tool_calls(view, get), answer("Your cart has the boAt Airdopes 141."), approves=False)
     await core.run_agent(session.id, "what's in my cart?", llm=llm, small_llm=llm)
-    assert llm.request_checks == []
+    results = [json.loads(m["content"]) for m in llm.agent_calls[1]["messages"] if m["role"] == "tool"]
+    assert [r["error"] for r in results] == ["validation_failed", "validation_failed"]
+    system = llm.agent_calls[0]["messages"][0]["content"]
+    assert "boAt Airdopes 141: ₹1,099" in system and '"boAt"' in system
+    assert llm.request_checks == []  # rejected before the request check, nothing changed
 
 
 async def test_confirmation_uses_the_previous_reply_as_context(session: Session) -> None:
