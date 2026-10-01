@@ -23,9 +23,10 @@ from typing import Literal
 from langfuse import observe, propagate_attributes
 
 from app.agent.guardrails import RepeatGuard, TurnBudget, repeat_result
+from app.agent.price_check import check_prices
 from app.agent.prompts import build_system_prompt
 from app.agent.request_check import RequestCheck, change_kind, refusal
-from app.agent.schemas import AgentResponse
+from app.agent.schemas import AgentResponse, PriceCheck
 from app.agent.trace_attributes import trace_attributes
 from app.config import settings
 from app.db import queries
@@ -159,6 +160,7 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
         # Check if the LLM wants to respond (no tool calls)
         if response.finish_reason == "stop" or not response.tool_calls:
             final_text = _without_images(response.content or "I couldn't find a good answer. Could you rephrase?")
+            final_text, price_checks = await _check_prices_traced(final_text)
 
             # Save assistant response
             await queries.save_message(
@@ -174,6 +176,7 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
                 response=final_text,
                 tool_calls_made=tools_called,
                 products_found=products_found,
+                price_checks=price_checks,
                 trace_url=await _current_trace_url(),
                 step_count=step_count,
                 total_tokens=budget.tokens,
@@ -238,6 +241,7 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
     final_text = _without_images(
         await _answer_from_research(llm, messages, tools_schema, products_found, budget, step_count + 1, limit_reason)
     )
+    final_text, price_checks = await _check_prices_traced(final_text)
     await queries.save_message(
         Message(
             session_id=session_id,
@@ -249,11 +253,27 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
         response=final_text,
         tool_calls_made=tools_called,
         products_found=products_found,
+        price_checks=price_checks,
         trace_url=await _current_trace_url(),
         step_count=step_count,
         total_tokens=budget.tokens,
         estimated_cost_usd=_cost(budget),
     )
+
+
+async def _check_prices_traced(answer: str) -> tuple[str, list[PriceCheck]]:
+    """check_prices() as a `check-prices` span: which links were checked, and how they came out."""
+    with langfuse.start_as_current_observation(as_type="span", name="check-prices", input=answer) as span:
+        checked, checks = await check_prices(answer)
+        statuses = [check.status for check in checks]
+        changed = any(status in ("corrected", "unavailable") for status in statuses)
+        span.update(
+            output=[check.model_dump() for check in checks],
+            metadata={"statuses": statuses},
+            level="WARNING" if changed else None,
+            status_message="prices corrected from the store pages" if changed else None,
+        )
+    return checked, checks
 
 
 def _cost(budget: TurnBudget) -> float | None:

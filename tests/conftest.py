@@ -31,6 +31,7 @@ os.environ.update(
 import pytest
 
 import app.agent.core as agent_core
+import app.agent.price_check as price_check
 import app.agent.suggestions as agent_suggestions
 from app.config import settings
 from app.db import database
@@ -64,3 +65,13 @@ def no_real_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(agent_core, "get_llm_adapter", refuse)
     monkeypatch.setattr(agent_core, "get_small_llm_adapter", refuse)
     monkeypatch.setattr(agent_suggestions, "get_small_llm_adapter", refuse)
+
+
+@pytest.fixture(autouse=True)
+def no_live_price_checks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Answers' store links are never fetched in tests; tests of the price check stub pages themselves."""
+
+    async def unreadable(url: str) -> tuple[None, None, None]:
+        return None, None, None
+
+    monkeypatch.setattr(price_check, "_live_details", unreadable)

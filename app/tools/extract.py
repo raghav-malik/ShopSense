@@ -244,9 +244,29 @@ async def extract_product_info(url: str) -> JSONObject:
         # 3. Fallback to meta tags and title
         meta_data = _extract_meta(soup)
 
-        # Merge: JSON-LD > OG > Meta
+        # 4. Amazon's buy box: Amazon pages carry no JSON-LD or Open Graph price.
+        buy_box = _extract_amazon_buy_box(soup)
+
+        # Merge: JSON-LD > Amazon buy box > OG > Meta
         name = product_data.get("name") or og_data.get("name") or meta_data.get("name")
-        price = product_data.get("price") or og_data.get("price") or meta_data.get("price")
+        # Where the price came from: structured product data can be trusted; a
+        # price found in the page description (e.g. "shoes under ₹3,000") can't.
+        price, price_source = next(
+            (
+                (fields["price"], source)
+                for fields, source in (
+                    (product_data, "structured_data"),
+                    (buy_box, "amazon_buy_box"),
+                    (og_data, "open_graph"),
+                    (meta_data, "page_description"),
+                )
+                if fields.get("price")
+            ),
+            (None, None),
+        )
+        available = product_data.get("available")
+        if available is None:
+            available = buy_box.get("available")
         rating = product_data.get("rating")
         features = product_data.get("features", [])
         image = og_data.get("image") or product_data.get("image")
@@ -256,12 +276,13 @@ async def extract_product_info(url: str) -> JSONObject:
             "web_content_notice": WEB_CONTENT_NOTICE,
             "name": clean_text(name, FIELD_MAX_CHARS) if name else "Unknown Product",
             "price": clean_text(price, 60) if price else None,
+            "price_source": price_source,
             "rating": clean_text(rating, 60) if rating else None,
             "features": [clean_text(f, FIELD_MAX_CHARS) for f in features[:5]],  # cap at 5
             "buy_link": url,
             "image": clean_text(image, 500) if image else None,
             # True/False only when the page states stock; None means unknown.
-            "available": product_data.get("available"),
+            "available": available,
             "source": _get_domain(url),
         }
 
@@ -380,6 +401,41 @@ def _extract_og_tags(soup: BeautifulSoup) -> ProductFields:
         result["price"] = _format_price(amount, currency)
     if (image := _meta_content(soup, property="og:image")) is not None:
         result["image"] = image
+    return result
+
+
+# The selling price in Amazon's buy box, most specific first. Other prices on
+# the page (other sellers, related items, the list price) live elsewhere.
+_AMAZON_PRICE_SELECTORS = (
+    "#tp_price_block_total_price_ww .a-offscreen",
+    "#corePrice_feature_div .a-offscreen",
+    "#corePriceDisplay_desktop_feature_div .priceToPay .a-offscreen",
+    "#apex_desktop .apexPriceToPay .a-offscreen",
+)
+_AMOUNT = re.compile(r"[\d,]+(?:\.\d+)?")
+
+
+def _extract_amazon_buy_box(soup: BeautifulSoup) -> ProductFields:
+    """Price and stock from an Amazon product page's buy box (empty elsewhere).
+    Checked live on amazon.in in September 2026: 5 of 6 product pages had the
+    price; the sixth said "Currently unavailable" and had no buy-box price."""
+    result: ProductFields = {}
+    for selector in _AMAZON_PRICE_SELECTORS:
+        element = soup.select_one(selector)
+        amount = _AMOUNT.search(element.get_text(strip=True)) if element else None
+        if amount:
+            value = float(amount.group().replace(",", ""))
+            result["price"] = f"₹{value:,.0f}"
+            break
+    availability = soup.select_one("#availability")
+    if availability:
+        text = availability.get_text(" ", strip=True).lower()
+        # Unavailable first: "Currently unavailable. We don't know when or if this
+        # item will be back in stock" also contains "in stock".
+        if "unavailable" in text or "out of stock" in text:
+            result["available"] = False
+        elif "in stock" in text:
+            result["available"] = True
     return result
 
 

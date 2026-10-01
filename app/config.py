@@ -124,6 +124,12 @@ class Settings(BaseSettings):
         default=0.25, description="Estimated cost budget (USD) for the agent's LLM calls in one turn"
     )
     max_search_results: int = Field(default=5, description="Default number of search results per query")
+    # Before an answer is shown, the prices next to its product links are checked
+    # on the store pages (fetched in parallel), and corrected if they've changed.
+    price_check_enabled: bool = Field(default=True, description="Check answer prices against the store pages")
+    price_check_timeout: float = Field(
+        default=8.0, description="Seconds to wait for store pages; slower ones go unchecked"
+    )
 
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / ".env",

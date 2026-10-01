@@ -57,6 +57,7 @@ app.config                                 settings
   - `evals/prompt_injection.py`
   - `evals/request_check.py`
   - `evals/scope.py`: shopping-only behaviour and no unnecessary tool calls
+  - `evals/price_accuracy.py`: do the prices shown next to links match the store pages?
 
 ## Tracing (Langfuse)
 

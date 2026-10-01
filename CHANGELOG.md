@@ -4,6 +4,18 @@ Notable changes to ShopSense. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Added
+- **Prices are checked on the store pages before an answer is shown.**
+  - What it does:
+    - Each product link is fetched, and the price beside it is compared to the rupee.
+    - Wrong prices are corrected with a note, and out-of-stock products are flagged.
+    - Product cards show whether a price was checked.
+  - Why: an audit of 125 turns found the model rarely invents prices (96% came from its sources). The wrong prices came from stale or second-hand search snippets and from search-page links.
+  - Measured with `evals/price_accuracy.py`: 0 of 6 shown prices matched the store before, and 7 of 7 and 5 of 5 after.
+  - The cost: about 4 seconds on answers with product links.
+  - It can be turned off with `PRICE_CHECK_ENABLED`. See ADR 0007.
+- **The page reader gets Amazon's live price and stock** from the buy box. Before, Amazon pages gave only their title (SR-36).
+
 ### Fixed
 - **The agent stays a shopping assistant and calls tools only when needed.** Before this, a rule to always search first made it search the web for "hey", the weather, jokes, and even "a gun without a license"; it also read "how should I invest 10k" as a shopping budget. A new scope section in the system prompt covers small talk, off-topic requests, personal and upsetting messages (kind, no sales pitch, a pointer to help when someone seems at risk), illegal items, things it can't do (orders, tracking), and attempts to change its role. `evals/scope.py` (28 edge cases): 10/28 before the change, 82/84 across three runs after it.
 

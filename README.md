@@ -40,6 +40,11 @@ A personal shopping concierge. Tell it what you're looking for ("wireless earbud
   - Illegal items are declined.
   - Questions about what it already knows (your cart, your budget, products it just showed) are answered without new tool calls.
   - `evals/scope.py` checks 28 such edge cases.
+- **Prices are checked on the store before you see them.**
+  - Each product link in an answer is fetched (Flipkart, Amazon.in, and stores that publish product data), and the price beside it is compared to the rupee.
+  - A wrong price is corrected, with a note; an out-of-stock product is flagged.
+  - Each product card says whether its price was checked ("✓ ₹1,949 · price checked on amazon.in just now") or came only from search results.
+  - The agent rarely invents prices. Wrong prices came from stale or second-hand search snippets; see [ADR 0007](docs/adr/0007-live-price-check.md).
 - **Suggests what to ask next.** Two or three follow-ups appear as buttons under each answer, after the answer is already on screen.
 - **Stays within limits.** Each turn has a step limit, a token budget and a cost budget. The agent doesn't repeat identical tool calls. If it hits a limit, it answers from what it found rather than failing.
 - **Treats the web as untrusted.**
@@ -75,8 +80,9 @@ flowchart LR
    - The results go back to the model.
    - The loop ends when the model answers in text.
 4. **At a limit, the agent still answers.** If the step limit or a budget is reached, one final call with tools disabled answers from what was gathered.
-5. **The answer is returned.** The API sends back the answer, the products found, the tools used, the steps, the tokens and an estimated cost.
-6. **The UI shows the answer, then fetches suggestions.** They come from `POST /sessions/{id}/suggestions`, on the small model.
+5. **Prices are checked on the store pages.** Each product link is fetched in parallel; prices that differ are corrected and out-of-stock products flagged (about 4s, only when the answer has product links).
+6. **The answer is returned.** The API sends back the answer, the products found, the tools used, the steps, the tokens and an estimated cost.
+7. **The UI shows the answer, then fetches suggestions.** They come from `POST /sessions/{id}/suggestions`, on the small model.
 
 ### Code layout
 
@@ -374,6 +380,7 @@ All settings come from environment variables or `.env` (see `.env.example`), val
 | `MAX_AGENT_STEPS` | `10` | LLM steps per turn |
 | `MAX_TURN_TOKENS`, `MAX_TURN_COST_USD` | `100000`, `0.25` | Per-turn runaway guards, far above a normal turn (about 15–20K tokens and $0.001) |
 | `MAX_SEARCH_RESULTS` | `5` | Default results per search |
+| `PRICE_CHECK_ENABLED`, `PRICE_CHECK_TIMEOUT` | `true`, `8` | Check answer prices on the store pages; slower pages go unchecked |
 
 ## API
 
@@ -418,6 +425,7 @@ uv run python -m scripts.smoke_test     # one live turn (costs a fraction of a c
 uv run python -m evals.prompt_injection # live: do poisoned web pages steer the agent?
 uv run python -m evals.request_check    # live: does the request check read real phrasing right?
 uv run python -m evals.scope            # live: shopping-only behaviour, no unnecessary tool calls
+uv run python -m evals.price_accuracy   # live: do shown prices match the store pages?
 ```
 
 - **Tests are hermetic.** `tests/conftest.py` uses dummy keys, turns tracing off and gives each test a temporary database. The agent gets fake LLMs injected (`run_agent(..., llm=..., small_llm=...)`), and a safety net fails any test that would reach a real provider.

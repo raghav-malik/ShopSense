@@ -42,6 +42,7 @@ Call a tool only when the answer needs it.
     # Part 2: Rules
     rules = """## Rules
 - Before recommending a specific product, find it with search_products (or use products already found in this conversation). Never fabricate product names, prices, or URLs.
+- Link each recommendation to the product's own page (for example an amazon.in/.../dp/... or flipkart.com/.../p/... page from your search results), not a search or category page: prices are checked against the linked page before your answer is shown.
 - ALWAYS include a buy link with every recommendation. A retailer or brand-store URL from your search results counts: the user just needs somewhere to buy, so once a product has a price and a store link, don't search again just to verify them or find a "better" link.
 - ALWAYS show prices in INR unless the user specifies otherwise.
 - ALWAYS explain WHY you are recommending a product — what makes it the best fit.
