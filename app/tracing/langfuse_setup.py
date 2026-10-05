@@ -30,7 +30,7 @@ def _configured_secrets() -> list[str]:
     """The keys this process holds, whatever their format: the patterns above
     only know today's key formats (Google's newer Gemini keys don't start with
     'AIza'). Longest first, so a key that contains another is replaced whole."""
-    values = [settings.openai_api_key, settings.groq_api_key, settings.gemini_api_key, settings.langfuse_secret_key]
+    values = [settings.openai_api_key, settings.llm_api_key, settings.gemini_api_key, settings.langfuse_secret_key]
     return sorted({s.get_secret_value() for s in values if s is not None and len(s) >= 8}, key=len, reverse=True)
 
 

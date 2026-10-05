@@ -15,6 +15,18 @@ Notable changes to ShopSense. The format follows [Keep a Changelog](https://keep
   - The cost: about 4 seconds on answers with product links.
   - It can be turned off with `PRICE_CHECK_ENABLED`. See ADR 0007.
 - **The page reader gets Amazon's live price and stock** from the buy box. Before, Amazon pages gave only their title (SR-36).
+- **Ollama Cloud as a provider** (`LLM_PROVIDER=ollama`, `gemma4:31b` at `https://ollama.com/v1`, also for side jobs).
+  - A small `OllamaAdapter`: Ollama's OpenAI-compatible API has no `tool_choice` and takes `max_tokens`, so a forced text answer leaves the tools out.
+  - The key setting is now `LLM_API_KEY`, shared by Ollama and Groq. `GROQ_API_KEY` is still accepted.
+  - Live evals on `gemma4:31b`:
+    - scope: 27/28
+    - request check: 31/31
+    - prices matching the store: 11/11
+    - prompt injection: tool hijack and image exfiltration resisted 3/3; cart and preference changes stayed blocked. It did recommend the planted scam link 3/3, the open risk in ADR 0005.
+  - A turn takes about 25–45 seconds.
+
+### Changed
+- **Tests ignore the model settings in `.env`** (`LLM_MODEL`, `LLM_BASE_URL`, `LLM_API_KEY`, ...), so a local provider switch can't change test results.
 
 ### Fixed
 - **The agent stays a shopping assistant and calls tools only when needed.** Before this, a rule to always search first made it search the web for "hey", the weather, jokes, and even "a gun without a license"; it also read "how should I invest 10k" as a shopping budget. A new scope section in the system prompt covers small talk, off-topic requests, personal and upsetting messages (kind, no sales pitch, a pointer to help when someone seems at risk), illegal items, things it can't do (orders, tracking), and attempts to change its role. `evals/scope.py` (28 edge cases): 10/28 before the change, 82/84 across three runs after it.
