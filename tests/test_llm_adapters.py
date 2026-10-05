@@ -12,6 +12,7 @@ from app.llm.adapter import (
     ChatCompletionsAdapter,
     GeminiAdapter,
     LLMAdapter,
+    OllamaAdapter,
     ResponsesAdapter,
     _messages_to_responses_input,
 )
@@ -67,7 +68,7 @@ def test_gemini_provider_defaults() -> None:
     assert s.llm_model == "gemini-3.8-flash"
     assert s.llm_base_url == "https://generativelanguage.googleapis.com/v1beta/openai/"
     assert s.llm_reasoning_effort is None  # Gemini 3 thinking can't be disabled; keep its default
-    assert s.llm_api_key is not None and s.llm_api_key.get_secret_value() == "AIza-test"
+    assert s.active_api_key is not None and s.active_api_key.get_secret_value() == "AIza-test"
 
 
 def test_gemini_requires_its_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -79,8 +80,28 @@ def test_gemini_requires_its_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_google_api_key_alias(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GOOGLE_API_KEY", "AIza-from-alias")
-    key = Settings(llm_provider="gemini").llm_api_key
+    key = Settings(llm_provider="gemini").active_api_key
     assert key is not None and key.get_secret_value() == "AIza-from-alias"
+
+
+def test_ollama_provider_defaults() -> None:
+    s = Settings(llm_provider="ollama", llm_api_key="ollama-test")
+    assert s.llm_model == "gemma4:31b" and s.llm_small_model == "gemma4:31b"
+    assert s.llm_base_url == "https://ollama.com/v1"
+    assert s.active_api_key is not None and s.active_api_key.get_secret_value() == "ollama-test"
+
+
+@pytest.mark.parametrize("provider", ["ollama", "groq"])
+def test_ollama_and_groq_require_llm_api_key(provider: str) -> None:
+    with pytest.raises(ValidationError, match=f"LLM_API_KEY is required when LLM_PROVIDER={provider}"):
+        Settings(_env_file=None, llm_provider=provider)  # type: ignore[arg-type]
+
+
+def test_groq_api_key_is_still_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LLM_API_KEY")  # conftest blanks it; the old name must work on its own
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-old-name")
+    key = Settings(_env_file=None, llm_provider="groq").active_api_key
+    assert key is not None and key.get_secret_value() == "gsk-old-name"
 
 
 @pytest.mark.parametrize(
@@ -89,6 +110,7 @@ def test_google_api_key_alias(monkeypatch: pytest.MonkeyPatch) -> None:
         ("openai", "chat_completions", ChatCompletionsAdapter),
         ("openai", "responses", ResponsesAdapter),
         ("gemini", "chat_completions", GeminiAdapter),
+        ("ollama", "chat_completions", OllamaAdapter),
     ],
 )
 def test_get_llm_adapter_picks_by_config(
@@ -97,6 +119,7 @@ def test_get_llm_adapter_picks_by_config(
     monkeypatch.setattr(settings, "llm_provider", provider)
     monkeypatch.setattr(settings, "llm_api", api)
     monkeypatch.setattr(settings, "gemini_api_key", SecretStr("AIza-test"))
+    monkeypatch.setattr(settings, "llm_api_key", SecretStr("ollama-test"))
     adapter_module.get_llm_adapter.cache_clear()
     try:
         assert type(adapter_module.get_llm_adapter()) is expected
@@ -148,6 +171,26 @@ def test_chat_completions_strips_provider_items_and_sets_temperature() -> None:
     assert kwargs["max_completion_tokens"] == settings.llm_max_tokens
 
 
+# ---- Ollama ----
+
+
+def test_ollama_request_has_no_tool_choice_and_uses_max_tokens() -> None:
+    kwargs = OllamaAdapter()._build_request(HISTORY, get_tool_schemas(), "auto")
+    assert "tool_choice" not in kwargs  # unsupported by Ollama's OpenAI-compatible API
+    assert kwargs["tools"] and kwargs["max_tokens"] == settings.llm_max_tokens
+    assert "max_completion_tokens" not in kwargs
+
+
+def test_ollama_forces_a_text_answer_by_leaving_tools_out() -> None:
+    kwargs = OllamaAdapter()._build_request(HISTORY, get_tool_schemas(), "none")
+    assert "tools" not in kwargs and "tool_choice" not in kwargs
+
+
+def test_ollama_traces_its_output_cap() -> None:
+    kwargs = OllamaAdapter()._build_request(HISTORY, None, "auto")
+    assert OllamaAdapter()._model_parameters(kwargs)["max_tokens"] == settings.llm_max_tokens
+
+
 # ---- Responses API ----
 
 
@@ -192,10 +235,15 @@ def test_responses_request_shape(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.parametrize(
     ("provider", "expected_model"),
-    [("openai", "gpt-6-luna"), ("groq", "openai/gpt-oss-20b"), ("gemini", "gemini-3.5-flash-lite")],
+    [
+        ("openai", "gpt-6-luna"),
+        ("groq", "openai/gpt-oss-20b"),
+        ("gemini", "gemini-3.5-flash-lite"),
+        ("ollama", "gemma4:31b"),
+    ],
 )
 def test_small_model_defaults_per_provider(provider: str, expected_model: str) -> None:
-    keys = {"openai_api_key": "sk-test", "groq_api_key": "gsk-test", "gemini_api_key": "AIza-test"}
+    keys = {"openai_api_key": "sk-test", "llm_api_key": "gsk-test", "gemini_api_key": "AIza-test"}
     assert Settings(llm_provider=provider, **keys).llm_small_model == expected_model  # type: ignore[arg-type]
 
 
@@ -210,6 +258,7 @@ def test_small_model_can_be_overridden() -> None:
         # Side jobs stay on fast Chat Completions even when the agent reasons via Responses.
         ("openai", "responses", ChatCompletionsAdapter),
         ("gemini", "chat_completions", GeminiAdapter),
+        ("ollama", "chat_completions", OllamaAdapter),
     ],
 )
 def test_small_adapter_uses_the_small_model_without_reasoning(
@@ -218,6 +267,7 @@ def test_small_adapter_uses_the_small_model_without_reasoning(
     monkeypatch.setattr(settings, "llm_provider", provider)
     monkeypatch.setattr(settings, "llm_api", api)
     monkeypatch.setattr(settings, "gemini_api_key", SecretStr("AIza-test"))
+    monkeypatch.setattr(settings, "llm_api_key", SecretStr("ollama-test"))
     monkeypatch.setattr(settings, "llm_small_model", "small-model")
     monkeypatch.setattr(settings, "llm_reasoning_effort", "medium")  # the agent's setting
     adapter_module.get_small_llm_adapter.cache_clear()
@@ -227,5 +277,5 @@ def test_small_adapter_uses_the_small_model_without_reasoning(
         adapter_module.get_small_llm_adapter.cache_clear()
     assert type(adapter) is expected
     assert isinstance(adapter, ChatCompletionsAdapter) and adapter.model == "small-model"
-    # OpenAI: "none"; Gemini has no off switch, so its default (None) falls back to the configured value.
+    # OpenAI: "none"; Gemini and Ollama have no default (None), so it falls back to the configured value.
     assert adapter.reasoning_effort == ("none" if provider == "openai" else "medium")

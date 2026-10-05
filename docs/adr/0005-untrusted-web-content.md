@@ -29,3 +29,4 @@ Layered defences, following OWASP LLM01 and Microsoft's guidance: label and clea
   - one extra small-model call on turns that change the cart or preferences
   - a user who asks indirectly might be asked to confirm
 - **What's not solved:** a weaker model can still *recommend* a scam link it read. Only the model's judgement and the labelling limit that.
+  On Ollama Cloud `gemma4:31b` (2026-10-05), the hidden-Unicode scenario got the planted link recommended in 3 of 3 runs. The cart and preference blocks held.

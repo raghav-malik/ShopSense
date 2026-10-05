@@ -74,7 +74,7 @@ class _OpenAISDKAdapter[ResponseT](LLMAdapter):
 
     def __init__(self, *, model: str | None = None, reasoning_effort: str | None = None) -> None:
         """`model` and `reasoning_effort` default to the configured agent model."""
-        api_key = settings.llm_api_key  # checked at startup for the configured provider
+        api_key = settings.active_api_key  # checked at startup for the configured provider
         self.client = AsyncOpenAI(
             api_key=api_key.get_secret_value() if api_key else None,
             base_url=settings.llm_base_url,
@@ -358,6 +358,30 @@ class GeminiAdapter(ChatCompletionsAdapter):
         return update
 
 
+class OllamaAdapter(ChatCompletionsAdapter):
+    """Ollama Cloud through its OpenAI-compatible endpoint (LLM_PROVIDER=ollama).
+
+    Ollama's Chat Completions API differs from OpenAI's in two ways that
+    ShopSense hits (docs.ollama.com/api/openai-compatibility, October 2026):
+    - `tool_choice` isn't supported. "auto" is the default anyway; to force a
+      text answer (tool_choice="none", at a turn limit) the tools are left out.
+    - The output cap is `max_tokens`, not `max_completion_tokens`.
+    """
+
+    @override
+    def _build_request(
+        self, messages: list[ChatMessage], tools: list[JSONObject] | None, tool_choice: str
+    ) -> JSONObject:
+        kwargs = super()._build_request(messages, tools if tool_choice != "none" else None, tool_choice)
+        kwargs.pop("tool_choice", None)
+        kwargs["max_tokens"] = kwargs.pop("max_completion_tokens")
+        return kwargs
+
+    @override
+    def _model_parameters(self, kwargs: JSONObject, service_tier: str | None = None) -> JSONObject:
+        return _pick_params(kwargs, ("temperature", "max_tokens", "reasoning_effort"), service_tier)
+
+
 class ResponsesAdapter(_OpenAISDKAdapter[Response]):
     """OpenAI Responses API (LLM_API=responses): reasoning *and* function tools
     together, which Chat Completions doesn't allow on GPT-6, with reasoning
@@ -638,7 +662,7 @@ GroqAdapter = OpenAICompatibleAdapter = ChatCompletionsAdapter
 
 @lru_cache(maxsize=1)
 def get_llm_adapter() -> LLMAdapter:
-    """Factory function. LLM_PROVIDER picks the provider (openai, groq, gemini)
+    """Factory function. LLM_PROVIDER picks the provider (openai, groq, gemini, ollama)
     and LLM_API picks OpenAI's API (chat_completions or responses); a provider
     with a different SDK needs its own LLMAdapter subclass.
 
@@ -647,6 +671,8 @@ def get_llm_adapter() -> LLMAdapter:
     """
     if settings.llm_provider == "gemini":
         return GeminiAdapter()
+    if settings.llm_provider == "ollama":
+        return OllamaAdapter()
     if settings.llm_api == "responses":
         return ResponsesAdapter()
     return ChatCompletionsAdapter()
@@ -661,4 +687,6 @@ def get_small_llm_adapter() -> LLMAdapter:
     reasoning_effort = PROVIDER_DEFAULTS[settings.llm_provider][2]
     if settings.llm_provider == "gemini":
         return GeminiAdapter(model=settings.llm_small_model, reasoning_effort=reasoning_effort)
+    if settings.llm_provider == "ollama":
+        return OllamaAdapter(model=settings.llm_small_model, reasoning_effort=reasoning_effort)
     return ChatCompletionsAdapter(model=settings.llm_small_model, reasoning_effort=reasoning_effort)

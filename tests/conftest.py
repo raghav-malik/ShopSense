@@ -20,6 +20,13 @@ os.environ.update(
         "LLM_PROVIDER": "openai",
         "LLM_API": "chat_completions",
         "OPENAI_API_KEY": "sk-test-not-a-real-key",
+        # Blank means "the provider's default", so model settings in .env
+        # (e.g. LLM_MODEL=gemma4:31b for Ollama) and its real keys stay out.
+        "LLM_API_KEY": "",
+        "LLM_MODEL": "",
+        "LLM_SMALL_MODEL": "",
+        "LLM_BASE_URL": "",
+        "LLM_REASONING_EFFORT": "",
         "LANGFUSE_PUBLIC_KEY": "pk-lf-test",
         "LANGFUSE_SECRET_KEY": "sk-lf-test",
         "LANGFUSE_BASE_URL": "http://localhost:1",

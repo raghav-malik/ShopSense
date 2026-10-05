@@ -344,7 +344,8 @@ Everything is configuration in `.env`. The model, base URL and reasoning setting
 | **OpenAI with reasoning** | add `LLM_API=responses` | The Responses API: reasoning *and* tools, with reasoning summaries in Langfuse (effort `medium`). In testing it took about 2× the time and more tokens, with fewer prompt crutches needed |
 | **A bigger OpenAI model** | `LLM_MODEL=gpt-6-sol` | Side jobs stay on `LLM_SMALL_MODEL`, and the cost estimate knows its price |
 | **Gemini** | `LLM_PROVIDER=gemini`, `GEMINI_API_KEY=...` (or `GOOGLE_API_KEY`) | `gemini-3.8-flash` through Google's OpenAI-compatible endpoint. The adapter replays Gemini 3's thought signatures, skips temperature (Google recommends the default of 1.0) and counts hidden thinking tokens. In testing on 2026-09-28 it was often overloaded (503s) and cost several times more than `gpt-6-luna` |
-| **Groq** | `LLM_PROVIDER=groq`, `GROQ_API_KEY=...` | `openai/gpt-oss-120b`. The free tier's 8K tokens per minute can't sustain a multi-step turn; a paid tier is needed |
+| **Ollama Cloud** | `LLM_PROVIDER=ollama`, `LLM_API_KEY=...` | `gemma4:31b` at `https://ollama.com/v1`, also for side jobs (the free plan covers gemma4 and allows one request at a time; `gpt-oss` models are billed per token). Ollama's endpoint doesn't support `tool_choice` and takes `max_tokens`; the adapter leaves the tools out to force a text answer at a turn limit. No local install is needed |
+| **Groq** | `LLM_PROVIDER=groq`, `LLM_API_KEY=...` (or `GROQ_API_KEY`) | `openai/gpt-oss-120b`. The free tier's 8K tokens per minute can't sustain a multi-step turn; a paid tier is needed |
 | **Any other OpenAI-compatible server** (a proxy, a local server) | `LLM_PROVIDER=openai`, `LLM_BASE_URL=...`, `LLM_MODEL=...` | Uses the Chat Completions adapter as is |
 | **A different side-job model** | `LLM_SMALL_MODEL=...` | Used for suggestions and the cart/preference request check (same provider) |
 
@@ -364,9 +365,9 @@ All settings come from environment variables or `.env` (see `.env.example`), val
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| `LLM_PROVIDER` | `openai` | `openai`, `gemini` or `groq` |
+| `LLM_PROVIDER` | `openai` | `openai`, `ollama`, `gemini` or `groq` |
 | `LLM_API` | `chat_completions` | `responses` uses the OpenAI Responses API (OpenAI only) |
-| `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY` | none | The chosen provider's key is required. Keys are `SecretStr`: they never print, and they're masked in traces |
+| `OPENAI_API_KEY`, `GEMINI_API_KEY`, `LLM_API_KEY` | none | The chosen provider's key is required; `LLM_API_KEY` is for Ollama and Groq (`GROQ_API_KEY` still works). Keys are `SecretStr`: they never print, and they're masked in traces |
 | `LLM_MODEL`, `LLM_BASE_URL`, `LLM_REASONING_EFFORT` | per provider | Overrides |
 | `LLM_SMALL_MODEL` | per provider | Side jobs: suggestions and the request check |
 | `LLM_TIMEOUT` | `60` | Seconds per LLM call; transient failures retry once |

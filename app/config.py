@@ -10,7 +10,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # pytest all find it no matter where they're launched from.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-LLMProvider = Literal["groq", "openai", "gemini"]
+LLMProvider = Literal["groq", "openai", "gemini", "ollama"]
 LLMApi = Literal["chat_completions", "responses"]
 LogFormat = Literal["json", "text"]
 
@@ -24,6 +24,9 @@ PROVIDER_DEFAULTS: dict[str, tuple[str, str, str | None]] = {
     "groq": ("https://api.groq.com/openai/v1", "openai/gpt-oss-120b", None),
     "openai": ("https://api.openai.com/v1", "gpt-6-luna", "none"),
     "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai/", "gemini-3.8-flash", None),
+    # Ollama Cloud's OpenAI-compatible endpoint. Over the API a cloud model is
+    # called by its tag (gemma4:31b); ":cloud" names are for the Ollama CLI/app.
+    "ollama": ("https://ollama.com/v1", "gemma4:31b", None),
 }
 # Model for side jobs that need no tools (follow-up suggestions): the cheapest
 # capable model per provider, as Airtap runs titles and suggestions on a small
@@ -34,6 +37,9 @@ SMALL_MODEL_DEFAULTS: dict[str, str] = {
     "groq": "openai/gpt-oss-20b",
     "openai": "gpt-6-luna",
     "gemini": "gemini-3.5-flash-lite",
+    # Ollama's free plan covers starter models such as gemma4; gpt-oss:20b and
+    # most others are billed per token, so side jobs use the same model.
+    "ollama": "gemma4:31b",
 }
 # The Responses API allows tools *with* reasoning. "medium" is OpenAI's default
 # and, in testing on gpt-6-luna, the lowest level that reliably produced
@@ -55,8 +61,12 @@ class Settings(BaseSettings):
     # Keys are SecretStr: they print as '**********' in repr(), logs, tracebacks
     # and model_dump(), and code reads the value only where it's sent
     # (.get_secret_value() in the LLM and Langfuse clients).
-    groq_api_key: SecretStr | None = Field(
-        default=None, description="Groq API key from console.groq.com (required when LLM_PROVIDER=groq)"
+    # One key for the OpenAI-compatible providers without a key of their own
+    # (Groq, Ollama Cloud). GROQ_API_KEY, its old name, is still accepted.
+    llm_api_key: SecretStr | None = Field(  # type: ignore[pydantic-alias]
+        default=None,
+        validation_alias=AliasChoices("LLM_API_KEY", "GROQ_API_KEY"),
+        description="LLM provider API key (Groq, Ollama, etc.); required when LLM_PROVIDER is groq or ollama",
     )
     openai_api_key: SecretStr | None = Field(
         default=None, description="OpenAI API key from platform.openai.com (required when LLM_PROVIDER=openai)"
@@ -71,7 +81,7 @@ class Settings(BaseSettings):
     )
     llm_model: str | None = Field(
         default=None,
-        description="Model ID; defaults per provider (gpt-6-luna on OpenAI, gpt-oss-120b on Groq, gemini-3.8-flash on Gemini)",
+        description="Model ID; defaults per provider (gpt-6-luna on OpenAI, gpt-oss-120b on Groq, gemini-3.8-flash on Gemini, gemma4:31b on Ollama)",
     )
     llm_small_model: str | None = Field(
         default=None,
@@ -151,8 +161,9 @@ class Settings(BaseSettings):
 
         # Fail at startup rather than on the agent's first call.
         # An empty SecretStr is falsy too, so KEY= in .env counts as missing.
-        if not self.llm_api_key:
-            raise ValueError(f"{self.llm_provider.upper()}_API_KEY is required when LLM_PROVIDER={self.llm_provider}")
+        if not self.active_api_key:
+            key_name = {"openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY"}.get(self.llm_provider, "LLM_API_KEY")
+            raise ValueError(f"{key_name} is required when LLM_PROVIDER={self.llm_provider}")
         if self.llm_api == "responses" and self.llm_provider != "openai":
             raise ValueError("LLM_API=responses is only implemented for LLM_PROVIDER=openai")
         if self.llm_api == "chat_completions" and self.llm_provider == "openai" and self.llm_reasoning_effort != "none":
@@ -164,11 +175,12 @@ class Settings(BaseSettings):
         return self
 
     @property
-    def llm_api_key(self) -> SecretStr | None:
+    def active_api_key(self) -> SecretStr | None:
         """The API key of the configured provider."""
         return {
             "openai": self.openai_api_key,
-            "groq": self.groq_api_key,
+            "groq": self.llm_api_key,
+            "ollama": self.llm_api_key,
             "gemini": self.gemini_api_key,
         }[self.llm_provider]
 
