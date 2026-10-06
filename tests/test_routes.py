@@ -1,7 +1,7 @@
 """API endpoints through FastAPI's TestClient. The agent is mocked where a route
 would call it, so these tests never reach an LLM."""
 
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from typing import Any, Protocol
 
 import pytest
@@ -9,7 +9,10 @@ from fastapi.testclient import TestClient
 
 import app.main as main_module
 import app.routes.chat as chat_routes
+import app.routes.sessions as session_routes
 from app.agent.schemas import AgentResponse
+from app.db import queries
+from app.db.models import Episode, Memory
 from app.llm.errors import LLMRateLimitError, LLMTimeoutError, LLMUnavailableError
 from app.llm.types import JSONObject
 from app.main import app
@@ -71,6 +74,71 @@ def test_sessions_are_unique(client: TestClient) -> None:
     assert client.post("/sessions").json()["session_id"] != client.post("/sessions").json()["session_id"]
 
 
+def test_a_new_session_summarizes_earlier_ones_in_the_background(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started: list[str] = []
+
+    async def summarize_pending(new_session_id: str) -> list[Episode]:
+        started.append(new_session_id)
+        return []
+
+    monkeypatch.setattr(session_routes, "summarize_pending_sessions", summarize_pending)
+    response = client.post("/sessions")
+    assert response.status_code == 201 and started == [response.json()["session_id"]]
+
+
+# ---- session summary ----
+
+
+def test_summarize_returns_the_episode(client: TestClient, session_id: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    small_llm = object()
+    seen: list[tuple[str, object]] = []
+
+    async def summarize(sid: str, llm: object) -> Episode:
+        seen.append((sid, llm))
+        return Episode(
+            session_id=sid,
+            summary="Looked for earbuds under ₹3,000 and carted the boAt Airdopes 141.",
+            products_searched='["wireless earbuds"]',
+            products_carted='["boAt Airdopes 141"]',
+            outcome="carted",
+            created_at="2026-10-06T08:00:00+00:00",
+        )
+
+    monkeypatch.setattr(chat_routes, "get_small_llm_adapter", lambda: small_llm)
+    monkeypatch.setattr(chat_routes, "summarize_session", summarize)
+    response = client.post(f"/sessions/{session_id}/summarize")
+    assert response.status_code == 200
+    assert response.json() == {
+        "session_id": session_id,
+        "summary": "Looked for earbuds under ₹3,000 and carted the boAt Airdopes 141.",
+        "products_searched": ["wireless earbuds"],
+        "products_carted": ["boAt Airdopes 141"],
+        "outcome": "carted",
+        "created_at": "2026-10-06T08:00:00+00:00",
+    }
+    assert seen == [(session_id, small_llm)]  # on the small model
+
+
+def test_summarize_returns_null_when_there_is_nothing_to_summarize(
+    client: TestClient, session_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def too_short(sid: str, llm: object) -> None:
+        return None
+
+    monkeypatch.setattr(chat_routes, "get_small_llm_adapter", lambda: object())
+    monkeypatch.setattr(chat_routes, "summarize_session", too_short)
+    response = client.post(f"/sessions/{session_id}/summarize")
+    assert response.status_code == 200 and response.json() is None
+
+
+def test_summarize_unknown_session(client: TestClient) -> None:
+    response = client.post("/sessions/nonexistent/summarize")
+    assert response.status_code == 404
+    assert error_of(response)["code"] == "session_not_found"
+
+
 # ---- chat ----
 
 
@@ -122,6 +190,25 @@ def test_chat_returns_agent_response(client: TestClient, session_id: str, monkey
     # The route picks the Langfuse trace id up front so failures can link to it.
     ((sid, message, kwargs),) = calls
     assert sid == session_id and message == "earbuds" and len(kwargs["langfuse_trace_id"]) == 32
+
+
+def test_chat_runs_scheduled_work_after_the_response(
+    client: TestClient, session_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Memory extraction goes through BackgroundTasks: it runs after the answer is sent."""
+    ran: list[str] = []
+
+    async def learn(message: str) -> None:
+        ran.append(message)
+
+    async def fake_run_agent(sid: str, message: str, **kwargs: Any) -> AgentResponse:
+        kwargs["schedule"](learn, message)
+        assert ran == []  # scheduled, not run while the agent is still answering
+        return AgentResponse(response="ok", step_count=1)
+
+    monkeypatch.setattr(chat_routes, "run_agent", fake_run_agent)
+    response = client.post(f"/sessions/{session_id}/chat", json={"message": "I always buy Sony"})
+    assert response.status_code == 200 and ran == ["I always buy Sony"]
 
 
 @pytest.mark.parametrize(
@@ -222,3 +309,72 @@ def test_unknown_route_uses_error_shape(client: TestClient) -> None:
     response = client.get("/nope")
     assert response.status_code == 404
     assert error_of(response)["code"] == "http_404"
+
+
+# ---- memory ----
+
+
+def run(client: TestClient, func: Callable[..., Awaitable[Any]], *args: Any) -> Any:
+    """Run a query in the app's event loop, where its database connection lives."""
+    assert client.portal is not None
+    return client.portal.call(func, *args)
+
+
+@pytest.fixture
+def remembered(client: TestClient, session_id: str) -> dict[str, str]:
+    """A preference, a learned fact and a past-session summary."""
+    memory = Memory(category="brand_dislike", content="dislikes boAt", confidence=0.8)
+    episode = Episode(session_id=session_id, summary="Looked for earbuds under ₹3,000.", outcome="browsed")
+    run(client, queries.set_preference, "preferred_brands", ["Sony"])
+    run(client, queries.save_memory, memory)
+    run(client, queries.save_episode, episode)
+    return {"memory": memory.id, "episode": episode.id}
+
+
+def test_memory_overview(client: TestClient, session_id: str, remembered: dict[str, str]) -> None:
+    body = client.get("/memory").json()
+    assert body["preferences"] == {"preferred_brands": ["Sony"]}
+    [memory] = body["memories"]
+    assert (memory["id"], memory["category"], memory["content"], memory["confidence"]) == (
+        remembered["memory"],
+        "brand_dislike",
+        "dislikes boAt",
+        0.8,
+    )
+    [episode] = body["episodes"]
+    assert (episode["id"], episode["session_id"], episode["summary"], episode["outcome"]) == (
+        remembered["episode"],
+        session_id,
+        "Looked for earbuds under ₹3,000.",
+        "browsed",
+    )
+
+
+def test_memory_overview_when_empty(client: TestClient) -> None:
+    assert client.get("/memory").json() == {"preferences": {}, "memories": [], "episodes": []}
+
+
+@pytest.mark.parametrize(
+    ("path", "kind", "code"),
+    [
+        ("/memory/memories/{memory}", "memories", "memory_not_found"),
+        ("/memory/episodes/{episode}", "episodes", "episode_not_found"),
+    ],
+)
+def test_forget_one_item(client: TestClient, remembered: dict[str, str], path: str, kind: str, code: str) -> None:
+    url = path.format(**remembered)
+    assert client.delete(url).status_code == 204
+    assert client.get("/memory").json()[kind] == []
+    response = client.delete(url)  # already gone
+    assert response.status_code == 404 and error_of(response)["code"] == code
+
+
+def test_forget_a_preference(client: TestClient, remembered: dict[str, str]) -> None:
+    assert client.delete("/memory/preferences/preferred_brands").status_code == 204
+    assert client.get("/memory").json()["preferences"] == {}
+    assert error_of(client.delete("/memory/preferences/preferred_brands"))["code"] == "preference_not_found"
+
+
+def test_forget_everything(client: TestClient, remembered: dict[str, str]) -> None:
+    assert client.delete("/memory").status_code == 204
+    assert client.get("/memory").json() == {"preferences": {}, "memories": [], "episodes": []}

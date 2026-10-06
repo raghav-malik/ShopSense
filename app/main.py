@@ -13,7 +13,7 @@ from app import __version__
 from app.config import settings
 from app.db.database import close_db, get_db, init_db
 from app.request_context import RequestContextMiddleware, configure_logging
-from app.routes import chat, sessions
+from app.routes import chat, memory, sessions
 from app.routes.errors import ErrorResponse, register_error_handlers
 from app.tracing.langfuse_setup import get_langfuse, shutdown_langfuse
 
@@ -70,6 +70,7 @@ app.add_middleware(RequestContextMiddleware)
 # Register routes
 app.include_router(sessions.router)
 app.include_router(chat.router)
+app.include_router(memory.router)
 
 
 async def _langfuse_project_url() -> str | None:
