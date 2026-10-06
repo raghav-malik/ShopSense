@@ -136,7 +136,6 @@ class _OpenAISDKAdapter[ResponseT](LLMAdapter):
 
         # Retry once on transient failures; fail fast with a clear, provider-
         # agnostic error on ones retrying can't fix.
-        # Pattern from Airtap's omniNormalizeProviderError
         provider = f"{settings.llm_provider} model {self.model!r}"
         max_retries = 1
         for attempt in range(max_retries + 1):
@@ -182,7 +181,7 @@ class _OpenAISDKAdapter[ResponseT](LLMAdapter):
     ) -> ResponseT:
         """One API call = one Langfuse generation, opened before the call and
         completed after it succeeds or fails (every attempt, including a 429
-        before the retry, is its own generation). Pattern from Airtap's omniTracing."""
+        before the retry, is its own generation)."""
         with GenerationTrace(
             name,
             model=kwargs["model"],
@@ -315,7 +314,6 @@ class GeminiAdapter(ChatCompletionsAdapter):
       (its encrypted reasoning) that must come back unchanged on the next
       request. The raw tool calls travel on the assistant message under
       PROVIDER_ITEMS_KEY (as with the Responses API) and are replayed verbatim.
-    Airtap's native-SDK omniGemini.ts preserves `thoughtSignature` the same way.
     """
 
     @override
@@ -385,8 +383,7 @@ class OllamaAdapter(ChatCompletionsAdapter):
 class ResponsesAdapter(_OpenAISDKAdapter[Response]):
     """OpenAI Responses API (LLM_API=responses): reasoning *and* function tools
     together, which Chat Completions doesn't allow on GPT-6, with reasoning
-    summaries recorded on each generation. Structure follows Airtap's
-    omniResponses.ts.
+    summaries recorded on each generation.
 
     Stateless (store=False): every call sends the whole turn. Reasoning items
     come back encrypted (include=["reasoning.encrypted_content"]) and must be

@@ -30,8 +30,8 @@ _LIST_MARKER = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s*")
 
 async def suggest_follow_ups(session_id: str, history: list[MessageRow], llm: LLMAdapter | None = None) -> list[str]:
     """Suggestions for the conversation so far, asked for by the UI after it
-    shows the agent's answer (as Airtap makes them when a task completes), so
-    the answer never waits for them. Traced as its own trace in the session."""
+    shows the agent's answer, so the answer never waits for them. Traced as its
+    own trace in the session."""
     messages: list[ChatMessage] = [
         {"role": m["role"], "content": m["content"]} for m in history if m["role"] in ("user", "assistant")
     ]

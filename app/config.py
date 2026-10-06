@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from typing import Literal, Self
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -28,9 +29,8 @@ PROVIDER_DEFAULTS: dict[str, tuple[str, str, str | None]] = {
     # called by its tag (gemma4:31b); ":cloud" names are for the Ollama CLI/app.
     "ollama": ("https://ollama.com/v1", "gemma4:31b", None),
 }
-# Model for side jobs that need no tools (follow-up suggestions): the cheapest
-# capable model per provider, as Airtap runs titles and suggestions on a small
-# model. On OpenAI that's the agent's default model: gpt-6-luna is the cheapest
+# Model for side jobs that need no tools (follow-up suggestions, titles, memory):
+# the cheapest capable model per provider. On OpenAI that's the agent's default model: gpt-6-luna is the cheapest
 # current-generation model ($0.10 / $0.50 per 1M tokens in September 2026), so
 # the setting matters once the agent moves to a bigger model or to reasoning.
 SMALL_MODEL_DEFAULTS: dict[str, str] = {
@@ -122,6 +122,10 @@ class Settings(BaseSettings):
     # Database
     db_path: str = Field(default="shopsense.db", description="SQLite database file path")
 
+    # Time zone for every date the user or the agent sees: "today" in the
+    # prompt, the day a chat belongs to, the times in the UI. Storage stays UTC.
+    timezone: str = Field(default="Asia/Kolkata", description="IANA time zone, e.g. Asia/Kolkata")
+
     # Logging: JSON lines (one object per line, with the request id) or readable text for local work
     log_format: LogFormat = Field(default="json", description="'json' (default) or 'text'")
 
@@ -158,6 +162,11 @@ class Settings(BaseSettings):
         self.llm_model = self.llm_model or model
         self.llm_small_model = self.llm_small_model or SMALL_MODEL_DEFAULTS[self.llm_provider]
         self.llm_reasoning_effort = self.llm_reasoning_effort or reasoning_effort
+
+        try:
+            ZoneInfo(self.timezone)
+        except (ZoneInfoNotFoundError, ValueError) as e:
+            raise ValueError(f"TIMEZONE={self.timezone!r} isn't an IANA time zone, e.g. Asia/Kolkata") from e
 
         # Fail at startup rather than on the agent's first call.
         # An empty SecretStr is falsy too, so KEY= in .env counts as missing.

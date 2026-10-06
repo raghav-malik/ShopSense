@@ -1,4 +1,4 @@
-"""Generation lifecycle for LLM calls (pattern from Airtap's omniTracing).
+"""Generation lifecycle for LLM calls: opened before the call, completed after it.
 
     with GenerationTrace("generate-agent-response", model=..., input=...) as trace:
         try:
@@ -104,8 +104,8 @@ class GenerationTrace:
 
 def _error_output(exc: BaseException) -> dict[str, Any]:
     """What failed, in the output field where it's easy to read in Langfuse. For
-    provider errors that includes the provider's own error body (Airtap's
-    _vendorResponse, but only on failure, to keep successful traces small)."""
+    provider errors that includes the provider's own error body (only on
+    failure, to keep successful traces small)."""
     output: dict[str, Any] = {"error": str(exc), "error_type": type(exc).__name__}
     status_code = getattr(exc, "status_code", None)
     if status_code is not None:

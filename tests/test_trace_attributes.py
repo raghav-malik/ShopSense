@@ -1,5 +1,5 @@
 """Every trace carries the model, provider, API, limits and app version (tags,
-metadata and version), like Airtap's per-call traces do."""
+metadata and version)."""
 
 import tomllib
 from collections.abc import Iterator

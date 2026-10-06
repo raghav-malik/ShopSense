@@ -1,8 +1,8 @@
 """What every Langfuse trace says about how it was produced.
 
-In Airtap each trace is a single LLM call, so the model and settings sit at the
-top of every trace. Here a trace is a whole turn, so the same facts are set at
-trace level explicitly, and propagated to every observation in it:
+A trace is a whole turn (several LLM calls and tools), so the model and settings
+aren't implied by any single call: they're set at trace level explicitly, and
+propagated to every observation in it:
 
 - tags (shown in the trace list, usable as filters): model, provider, API;
 - metadata: the models (agent and side jobs), provider, API, reasoning effort,

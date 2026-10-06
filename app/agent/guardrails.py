@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from app.llm.types import JSONObject
 
 # USD per 1M tokens (input, cached input, output), from the providers' pricing
-# pages on 2026-09-29, like Airtap's per-model pricing in its model registry.
+# pages on 2026-09-29.
 # Cached input matters: in a multi-step turn most of each prompt is the
 # previous step's context, and about 75% of a typical turn's input tokens were
 # cached (Langfuse). Gemini's cached rate isn't listed here, so it's billed at

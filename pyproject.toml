@@ -16,6 +16,8 @@ dependencies = [
     "pydantic>=2.13.5,<3",
     "pydantic-settings>=2.15,<3",
     "streamlit>=1.64,<2",
+    # zoneinfo needs it on Windows, which has no system time zone database.
+    "tzdata>=2025.2",
     "uvicorn[standard]>=0.54,<0.55",
 ]
 
@@ -110,7 +112,7 @@ layers = [
     "app.agent",
     "app.tools",
     "app.llm",
-    "app.db | app.tracing | app.request_context",
+    "app.db | app.tracing | app.request_context | app.clock",
     "app.config",
 ]
 

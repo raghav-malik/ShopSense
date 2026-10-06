@@ -13,7 +13,7 @@ A personal shopping concierge. Tell it what you're looking for ("wireless earbud
 - [Quick start](#quick-start)
 - [Example conversation](#example-conversation)
 - [Tech stack, and why](#tech-stack-and-why)
-- [Patterns borrowed from Airtap](#patterns-borrowed-from-airtap)
+- [Design patterns](#design-patterns)
 - [How to add a new tool](#how-to-add-a-new-tool)
 - [How to swap LLM providers](#how-to-swap-llm-providers)
 - [Configuration](#configuration)
@@ -50,8 +50,16 @@ A personal shopping concierge. Tell it what you're looking for ("wireless earbud
   - When you change your mind ("boAt is fine now"), the old fact is replaced, not kept beside the new one.
   - Each chat is summarized when you start a new one, or in the background if you just closed the tab.
   - New chats see the strongest facts and the latest summaries, framed as possibly outdated notes, never instructions.
-  - **"🧠 What I remember"** in the sidebar shows everything it uses, with a delete button for each item and "Clear all memory".
+  - **Settings shows all of it as markdown files,** each editable with an "Updated …" time:
+    - `user.md`: about you, in your own words (name, what to call you, pronouns, notes). Only you write it.
+    - `memory.md`: learned facts under headings. Delete a line to make it forget, or add your own.
+    - `preferences.md`: saved preferences.
+    - `YYYY-MM-DD.md`: each day's chat summaries, on the day the chat happened in your time zone.
   - It never learns from web pages or its own answers, so a planted page can't become a lasting memory. See [ADR 0008](docs/adr/0008-long-term-memory.md).
+- **All your chats in the sidebar.**
+  - Every past chat is listed, most recently active first, with a short title (made from your first message) and when you last used it ("2 hr ago", "Yesterday", "24 Sep").
+  - Click one to pick it up where you left off. Search titles, rename a chat, or delete it (with a confirmation).
+- **Dates are right for you.** Everything is stored in UTC and shown in one time zone (`TIMEZONE`, default `Asia/Kolkata`). The agent knows today's date, and a chat belongs to the day you had it, even if it was summarized later. See [ADR 0009](docs/adr/0009-chat-list-and-memory-files.md).
 - **Suggests what to ask next.** Two or three follow-ups appear as buttons under each answer, after the answer is already on screen.
 - **Stays within limits.** Each turn has a step limit, a token budget and a cost budget. The agent doesn't repeat identical tool calls. If it hits a limit, it answers from what it found rather than failing.
 - **Treats the web as untrusted.**
@@ -103,8 +111,10 @@ flowchart LR
 | `app/db/` | aiosqlite connection, models and queries |
 | `app/tracing/` | Langfuse client with PII and key masking; the per-call generation handle |
 | `app/request_context.py` | Request ids, JSON logs, the 500 handler |
-| `frontend/app.py` | The Streamlit chat UI |
-| `tests/` | 340 offline tests, plus 5 that need the internet |
+| `frontend/app.py` | The Streamlit chat UI: sidebar with past chats, chat, Settings for memory files |
+| `frontend/timefmt.py` | Time labels in the user's time zone ("2 hr ago", "Updated OCT 6, 2026 \| 10:15 AM") |
+| `app/clock.py` | Dates in the user's time zone (TIMEZONE); storage stays UTC |
+| `tests/` | 392 offline tests, plus 5 that need the internet |
 | `evals/` | Live evals: prompt injection, request-check accuracy, scope, price accuracy, memory |
 | `scripts/smoke_test.py` | One real agent turn against your configured provider |
 
@@ -239,26 +249,23 @@ Follow-up suggestions are a separate `suggest-follow-ups` trace in the same sess
 | **Pydantic / pydantic-settings** | One way to validate everything: settings at startup, API requests, and the LLM's tool arguments |
 | **pytest, ruff, mypy `--strict`, import-linter, pre-commit, GitHub Actions** | Hermetic tests (dummy keys, no network, a temporary DB each), one fast linter and formatter, strict types, enforced layering, and the same checks locally and in CI |
 
-## Patterns borrowed from Airtap
+## Design patterns
 
-Airtap is a production agent codebase (TypeScript) that served as a reference for this project. These patterns came from it:
-
-| Pattern | Where it is here | Why |
+| Pattern | Where it is | Why |
 | --- | --- | --- |
 | **Generation lifecycle:** open a trace generation *before* the LLM call, complete it *after* with `success()` or `error()`, and guard every tracing call | `app/tracing/generation.py` | The true start time and the exact input are recorded; failed calls show up with the provider's error body; a tracing bug can never break a user's request |
-| **One interface over several provider APIs,** with provider-specific data carried through opaquely | `app/llm/adapter.py`: `ChatCompletionsAdapter`, `ResponsesAdapter`, `GeminiAdapter` | The agent never imports a provider SDK. OpenAI's reasoning items and Gemini's thought signatures ride along in `_provider_items` and go back to the provider verbatim |
+| **One interface over several provider APIs,** with provider-specific data carried through opaquely | `app/llm/adapter.py`: `ChatCompletionsAdapter`, `ResponsesAdapter`, `GeminiAdapter`, `OllamaAdapter` | The agent never imports a provider SDK. OpenAI's reasoning items and Gemini's thought signatures ride along in `_provider_items` and go back to the provider verbatim |
 | **Provider-agnostic errors** with retry-once for transient failures | `app/llm/errors.py` and the adapter's retry loop | Routes map a small, fixed set of errors to HTTP statuses. Rate limits, timeouts and overloads retry once, and permanent errors fail fast |
 | **Validation errors fed back to the model** | `app/tools/registry.py` | Bad tool arguments return the field errors *and* the expected schema, so the model corrects itself on the next step instead of the loop crashing |
-| **Cheap models for side jobs** (per-job models) | `LLM_SMALL_MODEL`, `get_small_llm_adapter()` | Suggestions and the request check don't need the main model. They stay fast and cheap, even when the agent moves to a bigger model or to reasoning |
+| **Cheap models for side jobs** (per-job models) | `LLM_SMALL_MODEL`, `get_small_llm_adapter()` | Suggestions, titles, memory and the request check don't need the main model. They stay fast and cheap, even when the agent moves to a bigger model or to reasoning |
 | **Bounded parallel calls** | `CONCURRENT_TOOLS`, at most 4 at once, in `app/agent/core.py` | Web tools that don't touch session state run at the same time. Cart and preference calls stay in order |
-| **Side work after the answer** | `POST /sessions/{id}/suggestions` | Airtap makes suggestions when a task completes; here the answer returns about 1.5s sooner |
+| **Side work after the answer** | `POST /sessions/{id}/suggestions`, `BackgroundTasks` for titles and memory | The answer returns as soon as it's ready; suggestions, titles and memory never hold it up |
 | **A per-model price table** | `app/agent/guardrails.py` | Cost estimates (cached input priced at the cached rate) drive the per-turn cost budget and the UI's cost display |
 | **Step metadata on every generation** | `trace_metadata={"step": ..., "operation": ...}` | Traces can be filtered by step and by kind of call (agent step, final answer at a limit, suggestions, request check) |
 
-**What wasn't copied:**
-- **One trace per LLM call.** Airtap does this; ShopSense keeps one trace per chat turn, which is what Langfuse recommends for evaluating whole turns.
-- **Airtap's gaps.** It has no request timeouts, doesn't retry 500s or 502s, and leaves some model calls untraced and unbilled.
-- **Cross-provider fallback.** Airtap doesn't have it either, and today's backup providers are unreliable.
+**Deliberately not done:**
+- **One trace per LLM call.** ShopSense keeps one trace per chat turn, which is what Langfuse recommends for evaluating whole turns.
+- **Cross-provider fallback.** Today's backup providers are unreliable, and a fallback that fails differently is harder to reason about than a clear error.
 
 ## How to add a new tool
 
@@ -385,6 +392,7 @@ All settings come from environment variables or `.env` (see `.env.example`), val
 | `LANGFUSE_TIMEOUT` | `20` | Seconds for trace export (the SDK's 5s default dropped data) |
 | `DB_PATH` | `shopsense.db` | Relative paths resolve from the project root |
 | `LOG_FORMAT` | `json` | `text` for readable local logs |
+| `TIMEZONE` | `Asia/Kolkata` | IANA time zone for every date shown to you or the agent; storage stays UTC |
 | `MAX_AGENT_STEPS` | `10` | LLM steps per turn |
 | `MAX_TURN_TOKENS`, `MAX_TURN_COST_USD` | `100000`, `0.25` | Per-turn runaway guards, far above a normal turn (about 15–20K tokens and $0.001) |
 | `MAX_SEARCH_RESULTS` | `5` | Default results per search |
@@ -397,12 +405,18 @@ Interactive docs are at http://localhost:8000/docs.
 | Endpoint | What it does |
 | --- | --- |
 | `POST /sessions` | Creates a session, and summarizes earlier unsummarized sessions in the background |
+| `GET /sessions?q=&limit=&offset=` | Your chats, most recently active first, with title search |
+| `PATCH /sessions/{id}` | Renames a chat, with body `{"title": "..."}` |
+| `DELETE /sessions/{id}` | Deletes a chat from the list. What was learned from it stays in memory |
 | `POST /sessions/{id}/chat` | Runs one agent turn, with body `{"message": "..."}`. Returns `response`, `products_found`, `tool_calls_made`, `step_count`, `total_tokens`, `estimated_cost_usd` and `trace_url` |
 | `POST /sessions/{id}/suggestions` | Returns 2–3 follow-up messages for the conversation so far |
 | `POST /sessions/{id}/summarize` | Summarizes the session for future chats. Returns the summary, or `null` when there's nothing to summarize yet |
 | `GET /sessions/{id}/cart` | Returns the cart items and the total |
 | `GET /sessions/{id}/history` | Returns the messages and session details |
-| `GET /memory` | Everything remembered: preferences, learned facts and past-chat summaries |
+| `GET /memory/files` | Everything remembered, as markdown files: `user.md`, `memory.md`, `preferences.md`, `YYYY-MM-DD.md` |
+| `PUT /memory/files/{name}` | Saves an edited file, with body `{"content": "..."}`. Returns it as it now reads |
+| `DELETE /memory/files/{name}` | Clears a file (`user.md` goes back to its template) |
+| `GET /memory` | Everything remembered, item by item: preferences, learned facts and past-chat summaries |
 | `DELETE /memory/memories/{id}`, `/memory/episodes/{id}`, `/memory/preferences/{key}` | Forgets one item (404 if it's already gone). A forgotten chat summary isn't made again |
 | `DELETE /memory` | Forgets everything remembered. Chats stay |
 | `GET /livez` | The process is up. It checks nothing else |
@@ -428,7 +442,7 @@ Interactive docs are at http://localhost:8000/docs.
 ## Development
 
 ```bash
-uv run pytest -m "not network"          # 340 offline tests, about 8s (drop -m for the 5 network tests)
+uv run pytest -m "not network"          # 392 offline tests, about 10s (drop -m for the 5 network tests)
 uv run pytest --cov                     # with coverage (CI requires at least 85%; currently about 94%)
 uv run ruff check . && uv run ruff format .
 uv run mypy                             # strict

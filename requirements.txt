@@ -67,7 +67,7 @@ toml==0.10.2
 truststore==0.10.4 ; sys_platform != 'emscripten'
 typing-extensions==4.16.0
 typing-inspection==0.4.4
-tzdata==2026.4 ; sys_platform == 'emscripten' or sys_platform == 'win32'
+tzdata==2026.4
 urllib3==2.8.0
 uvicorn==0.54.0
 uvloop==0.22.1 ; platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'

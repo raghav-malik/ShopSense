@@ -1,5 +1,6 @@
 """Database models (Pydantic, for writes) and row types (TypedDict, for reads)."""
 
+import re
 import uuid
 from datetime import UTC, datetime
 from typing import Literal, TypedDict
@@ -34,14 +35,48 @@ def now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+TitleSource = Literal["placeholder", "llm", "user"]
+
+# user.md: the user's own notes about themselves. Written by the user, read by
+# the agent, never written by it. Blank fields mean "not told yet".
+USER_MD_TEMPLATE = """# About me
+
+Name:
+Call me:
+Pronouns:
+City:
+Notes:
+"""
+
+
+_USER_MD_FIELD = re.compile(r"^(name|call me|pronouns|city|notes)\s*:\s*$", re.IGNORECASE)
+
+
+def user_md_is_blank(content: str) -> bool:
+    """Whether user.md says nothing yet: only the template's heading and empty fields."""
+    for line in content.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and not _USER_MD_FIELD.match(line):
+            return False
+    return True
+
+
 class Session(BaseModel):
-    """A conversation. `budget` (INR) is set by the set_budget tool; `context_summary` is unused (SR-14)."""
+    """A conversation. `budget` (INR) is set by the set_budget tool; `context_summary` is unused (SR-14).
+
+    `title` starts as the first message (`placeholder`), is replaced by a short
+    generated title (`llm`) unless the user renamed it first (`user`). A deleted
+    session has `deleted_at` set and is treated as gone; its rows are kept.
+    """
 
     id: str = Field(default_factory=new_id)
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
     budget: float | None = None
     context_summary: str | None = None
+    title: str | None = None
+    title_source: TitleSource | None = None
+    deleted_at: str | None = None
 
 
 class Message(BaseModel):
@@ -161,3 +196,28 @@ class EpisodeRow(TypedDict):
     products_carted: str | None
     outcome: EpisodeOutcome | None
     created_at: str
+
+
+class ChatEpisodeRow(EpisodeRow):
+    """An episode with its chat's title and last activity: a summary belongs to
+    when the chat happened, not to when it was summarized (often later)."""
+
+    chat_title: str | None
+    last_active_at: str
+
+
+class ChatListRow(TypedDict):
+    """A chat in the sidebar list."""
+
+    id: str
+    title: str | None
+    created_at: str
+    updated_at: str
+
+
+class UserProfileRow(TypedDict):
+    """The user's own user.md."""
+
+    content: str
+    created_at: str
+    updated_at: str
