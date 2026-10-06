@@ -4,6 +4,7 @@ Run:  streamlit run frontend/app.py   (backend: uvicorn app.main:app --port 8000
 """
 
 import contextlib
+import json
 import os
 import sys
 from pathlib import Path
@@ -122,14 +123,6 @@ def delete_chat(chat_id: str) -> None:
     _call("DELETE", f"/sessions/{chat_id}")
 
 
-def load_messages(chat_id: str) -> list[JSONObject]:
-    """A chat's user and assistant messages, to show it again."""
-    history = get_history(chat_id)
-    return [
-        {"role": m["role"], "content": m["content"]} for m in history["messages"] if m["role"] in ("user", "assistant")
-    ]
-
-
 def get_memory_files() -> JSONObject:
     """Every memory file ({"timezone", "files"}): user.md, memory.md, preferences.md, then the day files."""
     return _call("GET", "/memory/files")
@@ -157,45 +150,16 @@ def get_backend_info() -> JSONObject | None:
 # ---- Session state ----
 
 
-def start_session(session_id: str, messages: list[JSONObject] | None = None) -> None:
+def start_session(
+    session_id: str, messages: list[JSONObject] | None = None, suggestions: list[str] | None = None
+) -> None:
     """Make `session_id` the current session and put it in the URL."""
     st.session_state.session_id = session_id
     st.session_state.messages = messages or []
-    st.session_state.suggestions = []
+    st.session_state.suggestions = suggestions or []
     # In the URL, so a page refresh reopens this conversation instead of
     # silently starting a new one.
     st.query_params["session"] = session_id
-
-
-def restore_or_create_session() -> None:
-    """Reopen the session in the URL (e.g. after a refresh), or create a new one."""
-    session_id = st.query_params.get("session")
-    if session_id:
-        try:
-            history = get_history(session_id)
-        except ApiError as e:
-            if e.code != "session_not_found":
-                raise
-        else:
-            messages = [
-                {"role": m["role"], "content": m["content"]}
-                for m in history["messages"]
-                if m["role"] in ("user", "assistant")
-            ]
-            start_session(session_id, messages)
-            return
-    start_session(create_session())
-
-
-if "session_id" not in st.session_state:
-    try:
-        restore_or_create_session()
-    except ApiError as e:
-        st.title("🛍️ ShopSense")
-        st.error(str(e))
-        st.stop()
-
-session_id = st.session_state.session_id
 
 
 # ---- Rendering helpers ----
@@ -294,6 +258,68 @@ def render_message(message: JSONObject, index: int) -> None:
             render_assistant_extras(message, index)
 
 
+def answer_message(content: str, details: JSONObject | None) -> JSONObject:
+    """An assistant message as the chat shows it: its text, plus the product cards,
+    price checks and trace details that were saved with it."""
+    message: JSONObject = {"role": "assistant", "content": content}
+    if not details:
+        return message
+    products, cited = pick_product_cards({"products_found": details.get("products_found", []), "response": content})
+    message.update(products=products, products_cited=cited, price_checks=details.get("price_checks", []))
+    meta = {
+        k: details.get(k) for k in ("trace_url", "step_count", "total_tokens", "estimated_cost_usd", "tool_calls_made")
+    }
+    if meta["trace_url"]:
+        message["meta"] = {**meta, "tool_calls_made": meta["tool_calls_made"] or []}
+    return message
+
+
+def messages_from_history(history: JSONObject) -> tuple[list[JSONObject], list[str]]:
+    """A saved chat as the UI shows it, and the follow-up suggestions under its last answer."""
+    messages: list[JSONObject] = []
+    for m in history["messages"]:
+        if m["role"] == "user":
+            messages.append({"role": "user", "content": m["content"]})
+        elif m["role"] == "assistant":
+            details = json.loads(m["details"]) if m.get("details") else None
+            messages.append(answer_message(m["content"], details))
+            messages[-1]["suggestions"] = (details or {}).get("suggestions", [])
+    suggestions = messages[-1].pop("suggestions", []) if messages and messages[-1]["role"] == "assistant" else []
+    for message in messages:
+        message.pop("suggestions", None)
+    return messages, suggestions
+
+
+def load_chat(chat_id: str) -> None:
+    """Show a saved chat again, with everything that was under its answers."""
+    start_session(chat_id, *messages_from_history(get_history(chat_id)))
+
+
+def restore_or_create_session() -> None:
+    """Reopen the session in the URL (e.g. after a refresh), or create a new one."""
+    session_id = st.query_params.get("session")
+    if session_id:
+        try:
+            load_chat(session_id)
+        except ApiError as e:
+            if e.code != "session_not_found":
+                raise
+        else:
+            return
+    start_session(create_session())
+
+
+if "session_id" not in st.session_state:
+    try:
+        restore_or_create_session()
+    except ApiError as e:
+        st.title("🛍️ ShopSense")
+        st.error(str(e))
+        st.stop()
+
+session_id = st.session_state.session_id
+
+
 # ---- Sidebar: past chats ----
 
 CHAT_PAGE = 30
@@ -308,7 +334,7 @@ def open_chat(chat_id: str) -> None:
     if chat_id == st.session_state.session_id:
         return
     try:
-        start_session(chat_id, load_messages(chat_id))
+        load_chat(chat_id)
     except ApiError as e:
         st.session_state.sidebar_error = str(e)
 

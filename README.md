@@ -114,7 +114,7 @@ flowchart LR
 | `frontend/app.py` | The Streamlit chat UI: sidebar with past chats, chat, Settings for memory files |
 | `frontend/timefmt.py` | Time labels in the user's time zone ("2 hr ago", "Updated OCT 6, 2026 \| 10:15 AM") |
 | `app/clock.py` | Dates in the user's time zone (TIMEZONE); storage stays UTC |
-| `tests/` | 392 offline tests, plus 5 that need the internet |
+| `tests/` | 399 offline tests, plus 5 that need the internet |
 | `evals/` | Live evals: prompt injection, request-check accuracy, scope, price accuracy, memory |
 | `scripts/smoke_test.py` | One real agent turn against your configured provider |
 
@@ -412,7 +412,7 @@ Interactive docs are at http://localhost:8000/docs.
 | `POST /sessions/{id}/suggestions` | Returns 2–3 follow-up messages for the conversation so far |
 | `POST /sessions/{id}/summarize` | Summarizes the session for future chats. Returns the summary, or `null` when there's nothing to summarize yet |
 | `GET /sessions/{id}/cart` | Returns the cart items and the total |
-| `GET /sessions/{id}/history` | Returns the messages and session details |
+| `GET /sessions/{id}/history` | Returns the messages and session details. Each answer carries its `details` (products, price checks, trace link, follow-up suggestions), so a reopened chat looks the same |
 | `GET /memory/files` | Everything remembered, as markdown files: `user.md`, `memory.md`, `preferences.md`, `YYYY-MM-DD.md` |
 | `PUT /memory/files/{name}` | Saves an edited file, with body `{"content": "..."}`. Returns it as it now reads |
 | `DELETE /memory/files/{name}` | Clears a file (`user.md` goes back to its template) |
@@ -442,7 +442,7 @@ Interactive docs are at http://localhost:8000/docs.
 ## Development
 
 ```bash
-uv run pytest -m "not network"          # 392 offline tests, about 10s (drop -m for the 5 network tests)
+uv run pytest -m "not network"          # 399 offline tests, about 10s (drop -m for the 5 network tests)
 uv run pytest --cov                     # with coverage (CI requires at least 85%; currently about 94%)
 uv run ruff check . && uv run ruff format .
 uv run mypy                             # strict

@@ -1,6 +1,7 @@
 """Per-session endpoints: chat, follow-up suggestions, session summary, cart and history."""
 
 import asyncio
+import contextlib
 import json
 import logging
 import math
@@ -16,6 +17,7 @@ from app.db import queries
 from app.db.models import Episode, EpisodeOutcome, MessageRow, Session
 from app.llm.adapter import get_small_llm_adapter
 from app.llm.errors import LLMError, LLMRateLimitError, LLMTimeoutError, LLMUnavailableError
+from app.llm.types import JSONObject
 from app.routes.errors import ErrorResponse, api_error
 from app.tracing.langfuse_setup import get_langfuse
 
@@ -113,7 +115,10 @@ async def suggestions(session_id: str) -> SuggestionsResponse:
     the answer itself never waits for suggestions."""
     await _require_session(session_id)
     history = await queries.get_messages(session_id, limit=12)
-    return SuggestionsResponse(suggestions=await suggest_follow_ups(session_id, history))
+    suggestions = await suggest_follow_ups(session_id, history)
+    if suggestions:  # saved with the answer, so they're still there when the chat is reopened
+        await queries.add_to_latest_answer(session_id, {"suggestions": suggestions})
+    return SuggestionsResponse(suggestions=suggestions)
 
 
 class EpisodeResponse(BaseModel):
@@ -203,6 +208,24 @@ async def get_history(session_id: str) -> HistoryResponse:
 
     messages = await queries.get_messages(session_id)
     return HistoryResponse(
-        messages=messages,
+        messages=_with_recovered_links(messages),
         session=SessionInfo(id=session.id, created_at=session.created_at, budget=session.budget),
     )
+
+
+def _with_recovered_links(messages: list[MessageRow]) -> list[MessageRow]:
+    """Answers saved before details were stored get their product links back from
+    the search results of the same turn (still in the chat as tool rows). Their
+    price checks and trace details weren't kept, so those stay missing."""
+    found: list[JSONObject] = []
+    recovered: list[MessageRow] = []
+    for message in messages:
+        if message["role"] == "user":
+            found = []
+        elif message["role"] == "tool" and message["tool_name"] == "search_products":
+            with contextlib.suppress(json.JSONDecodeError, TypeError, AttributeError):
+                found.extend(json.loads(message["content"]).get("results", []))
+        elif message["role"] == "assistant" and not message.get("details") and found:
+            message = {**message, "details": json.dumps({"products_found": found[:30]})}
+        recovered.append(message)
+    return recovered

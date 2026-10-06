@@ -1,6 +1,7 @@
 """API endpoints through FastAPI's TestClient. The agent is mocked where a route
 would call it, so these tests never reach an LLM."""
 
+import json
 from collections.abc import Awaitable, Callable, Iterator
 from typing import Any, Protocol
 
@@ -12,10 +13,12 @@ import app.routes.chat as chat_routes
 import app.routes.sessions as session_routes
 from app.agent.schemas import AgentResponse
 from app.db import queries
-from app.db.models import Episode, Memory
+from app.db.models import Episode, Memory, Message, MessageRole
 from app.llm.errors import LLMRateLimitError, LLMTimeoutError, LLMUnavailableError
 from app.llm.types import JSONObject
 from app.main import app
+
+AMAZON = "https://www.amazon.in/boAt-Airdopes-141/dp/B09N3ZNHTY"
 
 
 class _OfflineLangfuse:
@@ -378,3 +381,49 @@ def test_forget_a_preference(client: TestClient, remembered: dict[str, str]) -> 
 def test_forget_everything(client: TestClient, remembered: dict[str, str]) -> None:
     assert client.delete("/memory").status_code == 204
     assert client.get("/memory").json() == {"preferences": {}, "memories": [], "episodes": []}
+
+
+# ---- answer details in the history ----
+
+
+def say(test_client: TestClient, chat_id: str, role: MessageRole, content: str, **fields: Any) -> None:
+    run(test_client, queries.save_message, Message(session_id=chat_id, role=role, content=content, **fields))
+
+
+def test_suggestions_are_saved_and_come_back_with_the_history(
+    client: TestClient,
+    session_id: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def suggest(sid: str, history: list[Any]) -> list[str]:
+        return ["Show me cheaper options", "Compare these two"]
+
+    monkeypatch.setattr(chat_routes, "suggest_follow_ups", suggest)
+    say(client, session_id, "user", "earbuds")
+    say(client, session_id, "assistant", "Here are some.", details=json.dumps({"products_found": [], "step_count": 1}))
+    assert client.post(f"/sessions/{session_id}/suggestions").json() == {
+        "suggestions": ["Show me cheaper options", "Compare these two"]
+    }
+    [_, reply] = client.get(f"/sessions/{session_id}/history").json()["messages"]
+    assert json.loads(reply["details"]) == {
+        "products_found": [],
+        "step_count": 1,
+        "suggestions": ["Show me cheaper options", "Compare these two"],
+    }
+
+
+def test_older_answers_get_their_links_back_from_the_search_results(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    hits = [{"title": "boAt Airdopes 141", "url": AMAZON, "snippet": "₹1,099", "source": "amazon.in"}]
+    say(client, session_id, "user", "earbuds")
+    say(client, session_id, "tool", json.dumps({"results": hits}), tool_name="search_products", tool_call_id="c1")
+    say(client, session_id, "assistant", f"[boAt]({AMAZON})")  # saved before details existed
+    say(client, session_id, "user", "thanks")
+    say(client, session_id, "assistant", "You're welcome!")  # no search this turn: nothing to recover
+
+    messages = client.get(f"/sessions/{session_id}/history").json()["messages"]
+    answers = [m for m in messages if m["role"] == "assistant"]
+    assert json.loads(answers[0]["details"]) == {"products_found": hits}
+    assert answers[1]["details"] is None

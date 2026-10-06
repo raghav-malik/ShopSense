@@ -192,19 +192,7 @@ async def _run_agent(
         if response.finish_reason == "stop" or not response.tool_calls:
             final_text = _without_images(response.content or "I couldn't find a good answer. Could you rephrase?")
             final_text, price_checks = await _check_prices_traced(final_text)
-
-            # Save assistant response
-            await queries.save_message(
-                Message(
-                    session_id=session_id,
-                    role="assistant",
-                    content=final_text,
-                    token_count=response.usage.get("total_tokens", 0),
-                )
-            )
-            _schedule_after_answer(schedule, user_message, previous_reply, session_id, small_llm, new_title)
-
-            return AgentResponse(
+            reply = AgentResponse(
                 response=final_text,
                 tool_calls_made=tools_called,
                 products_found=products_found,
@@ -214,6 +202,19 @@ async def _run_agent(
                 total_tokens=budget.tokens,
                 estimated_cost_usd=_cost(budget),
             )
+
+            # Save assistant response, with what the UI shows under it
+            await queries.save_message(
+                Message(
+                    session_id=session_id,
+                    role="assistant",
+                    content=final_text,
+                    token_count=response.usage.get("total_tokens", 0),
+                    details=_answer_details(reply),
+                )
+            )
+            _schedule_after_answer(schedule, user_message, previous_reply, session_id, small_llm, new_title)
+            return reply
 
         # Tool dispatch — process each tool call
         # Add the assistant message with tool_calls
@@ -274,15 +275,7 @@ async def _run_agent(
         await _answer_from_research(llm, messages, tools_schema, products_found, budget, step_count + 1, limit_reason)
     )
     final_text, price_checks = await _check_prices_traced(final_text)
-    await queries.save_message(
-        Message(
-            session_id=session_id,
-            role="assistant",
-            content=final_text,
-        )
-    )
-    _schedule_after_answer(schedule, user_message, previous_reply, session_id, small_llm, new_title)
-    return AgentResponse(
+    reply = AgentResponse(
         response=final_text,
         tool_calls_made=tools_called,
         products_found=products_found,
@@ -292,6 +285,16 @@ async def _run_agent(
         total_tokens=budget.tokens,
         estimated_cost_usd=_cost(budget),
     )
+    await queries.save_message(
+        Message(
+            session_id=session_id,
+            role="assistant",
+            content=final_text,
+            details=_answer_details(reply),
+        )
+    )
+    _schedule_after_answer(schedule, user_message, previous_reply, session_id, small_llm, new_title)
+    return reply
 
 
 async def _check_prices_traced(answer: str) -> tuple[str, list[PriceCheck]]:
@@ -307,6 +310,19 @@ async def _check_prices_traced(answer: str) -> tuple[str, list[PriceCheck]]:
             status_message="prices corrected from the store pages" if changed else None,
         )
     return checked, checks
+
+
+# Enough for the UI's product cards (it shows 3) with room to spare; search
+# results can run to dozens per turn.
+_SAVED_PRODUCTS = 30
+
+
+def _answer_details(result: AgentResponse) -> str:
+    """What the UI shows under an answer, saved with it so a reopened chat shows
+    the same product links, price checks and trace details."""
+    details = result.model_dump(mode="json", exclude={"response"})
+    details["products_found"] = details["products_found"][:_SAVED_PRODUCTS]
+    return json.dumps(details)
 
 
 def _schedule_after_answer(

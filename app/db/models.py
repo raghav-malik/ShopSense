@@ -90,6 +90,9 @@ class Message(BaseModel):
     tool_call_id: str | None = None
     created_at: str = Field(default_factory=now_iso)
     token_count: int | None = None
+    # An answer's extras as the UI shows them under it (JSON): products found,
+    # price checks, trace link, steps, tokens, cost, and its follow-up suggestions.
+    details: str | None = None
 
 
 class CartItem(BaseModel):
@@ -158,6 +161,7 @@ class MessageRow(TypedDict):
     tool_call_id: str | None
     created_at: str
     token_count: int | None
+    details: str | None
 
 
 class CartItemRow(TypedDict):

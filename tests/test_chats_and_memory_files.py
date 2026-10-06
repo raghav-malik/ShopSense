@@ -251,6 +251,8 @@ async def test_an_old_database_is_migrated(tmp_path: Path, monkeypatch: pytest.M
         assert current.title == "wireless earbuds under 3000 with long battery life and ANC"[:60]
         assert current.updated_at == "2026-09-01T10:05:00+00:00"  # the backfill isn't activity
         assert (await queries.get_user_profile())["content"] == USER_MD_TEMPLATE
+        db = await database.get_db()
+        assert "details" in {row[1] for row in await db.execute_fetchall("PRAGMA table_info(messages)")}
     finally:
         await database.close_db()
 
