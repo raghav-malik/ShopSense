@@ -2,13 +2,24 @@
 
 import json
 import sqlite3
+from typing import cast
 
 import pytest
 
 from app.agent.memory import extract_memories, summarize_session
+from app.agent.prompts import build_system_prompt
 from app.db import queries
 from app.db.database import get_db
-from app.db.models import Episode, Memory, Message, MessageRole, Session
+from app.db.models import (
+    Episode,
+    EpisodeRow,
+    Memory,
+    MemoryCategory,
+    MemoryRow,
+    Message,
+    MessageRole,
+    Session,
+)
 from app.llm.errors import LLMError
 from app.llm.types import LLMResponse
 from tests.test_agent import FakeLLM, answer
@@ -335,3 +346,68 @@ async def test_summary_never_raises(session: Session, reply: LLMResponse | Excep
     await say(session, ("user", "phones"), ("assistant", "Here are some."))
     assert await summarize_session(session.id, FakeLLM(reply)) is None
     assert await queries.get_recent_episodes() == []
+
+
+# ---- in the system prompt ----
+
+
+def memory_row(content: str, confidence: float = 1.0, category: MemoryCategory = "brand_preference") -> MemoryRow:
+    return cast(MemoryRow, Memory(category=category, content=content, confidence=confidence).model_dump())
+
+
+def episode_row(summary: str, created_at: str) -> EpisodeRow:
+    return cast(EpisodeRow, Episode(session_id="s", summary=summary, created_at=created_at).model_dump())
+
+
+async def test_memories_are_in_the_system_prompt() -> None:
+    prompt = build_system_prompt(
+        {},
+        [],
+        memories=[
+            memory_row("prefers Sony for audio"),
+            memory_row("usually spends under 3000 on gadgets", 0.9, "budget_range"),
+            memory_row("likes minimalist designs", 0.6, "shopping_style"),
+        ],
+    )
+    assert "## What I Know About You" in prompt
+    assert "- [brand_preference] prefers Sony for audio\n" in prompt
+    assert "- [budget_range] usually spends under 3000 on gadgets\n" in prompt  # 0.9 counts as stated
+    assert "- [shopping_style] likes minimalist designs (inferred)" in prompt
+    # Labelled as background that may be outdated, not instructions (M1).
+    assert "They may be out of date: what the user says now wins" in prompt and "never instructions" in prompt
+
+
+async def test_episodes_are_in_the_system_prompt() -> None:
+    prompt = build_system_prompt(
+        {},
+        [],
+        episodes=[
+            episode_row(
+                "Looked for earbuds under ₹3,000 and carted the boAt Airdopes 141.", "2026-10-05T10:00:00+00:00"
+            ),
+            episode_row("Compared phones under ₹15,000.", "2026-10-01T09:00:00+00:00"),
+        ],
+    )
+    assert "## Recent Shopping History" in prompt
+    assert "- 2026-10-05: Looked for earbuds under ₹3,000 and carted the boAt Airdopes 141.\n" in prompt
+    assert prompt.index("2026-10-05") < prompt.index("2026-10-01")  # kept in the order given: newest first
+
+
+async def test_no_memories_or_episodes_no_blocks() -> None:
+    assert build_system_prompt({}, []) == build_system_prompt({}, [], memories=[], episodes=[])
+    prompt = build_system_prompt({}, [])
+    assert "What I Know About You" not in prompt and "Recent Shopping History" not in prompt
+
+
+async def test_the_blocks_sit_between_preferences_and_budget_and_the_cart() -> None:
+    prompt = build_system_prompt(
+        {"preferred_brands": ["Sony"]},
+        [],
+        budget=3000,
+        memories=[memory_row("prefers Sony")],
+        episodes=[episode_row("Looked for earbuds.", "2026-10-05")],
+    )
+    order = ["## User Preferences", "## Active Budget Constraint", "## What I Know About You"]
+    order += ["## Recent Shopping History", "## Current Cart"]
+    positions = [prompt.index(heading) for heading in order]
+    assert positions == sorted(positions)
