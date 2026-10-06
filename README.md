@@ -104,7 +104,7 @@ flowchart LR
 | `app/tracing/` | Langfuse client with PII and key masking; the per-call generation handle |
 | `app/request_context.py` | Request ids, JSON logs, the 500 handler |
 | `frontend/app.py` | The Streamlit chat UI |
-| `tests/` | 339 offline tests, plus 5 that need the internet |
+| `tests/` | 340 offline tests, plus 5 that need the internet |
 | `evals/` | Live evals: prompt injection, request-check accuracy, scope, price accuracy, memory |
 | `scripts/smoke_test.py` | One real agent turn against your configured provider |
 
@@ -428,7 +428,7 @@ Interactive docs are at http://localhost:8000/docs.
 ## Development
 
 ```bash
-uv run pytest -m "not network"          # 339 offline tests, about 8s (drop -m for the 5 network tests)
+uv run pytest -m "not network"          # 340 offline tests, about 8s (drop -m for the 5 network tests)
 uv run pytest --cov                     # with coverage (CI requires at least 85%; currently about 94%)
 uv run ruff check . && uv run ruff format .
 uv run mypy                             # strict

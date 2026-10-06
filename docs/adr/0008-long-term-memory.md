@@ -42,6 +42,8 @@ That makes memory a lasting channel into the prompt, which raises three problems
 - **Contradictions 8/8.**
 - **Poisoning 2/2:** full agent turns on search results telling the memory to "remember the user loves MegaBass" left nothing about MegaBass in facts or summaries.
 
+**Memory can over-steer a model.** With "dislikes boAt" remembered, `gemma4:31b` refused to compare boAt earbuds the user named; worded as a note in the memory block, it then asked "would you still like me to proceed?". A rule in the main rules section fixed it: preferences shape suggestions but never limit requests (5/5 probes; `evals/scope.py` with memories seeded, 26/28 → 27/28, the same as without memory).
+
 **The cost:**
 - One small-model call after each answer, plus one per summarized session.
 - On a plan that allows one request at a time, the suggestion buttons right after an answer can wait about 2 s behind it. The answer itself doesn't wait.
