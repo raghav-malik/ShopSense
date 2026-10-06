@@ -1,6 +1,6 @@
 # ShopSense
 
-A personal shopping concierge. Tell it what you're looking for ("wireless earbuds under ₹3,000 with good battery"), and it searches the web, reads product pages, compares options, and answers with specific products, sourced prices and buy links. It keeps a cart and remembers your preferences. Every turn is traced in [Langfuse](https://langfuse.com), so you can see exactly what the agent did and why.
+A personal shopping concierge. Tell it what you're looking for ("wireless earbuds under ₹3,000 with good battery"), and it searches the web, reads product pages, compares options, and answers with specific products, sourced prices and buy links. It keeps a cart, remembers your preferences, and learns about you across chats, which you can see and delete. Every turn is traced in [Langfuse](https://langfuse.com), so you can see exactly what the agent did and why.
 
 ![ShopSense answering a request with a comparison table, product cards and follow-up suggestions](docs/images/answer.png)
 
@@ -45,6 +45,13 @@ A personal shopping concierge. Tell it what you're looking for ("wireless earbud
   - A wrong price is corrected, with a note; an out-of-stock product is flagged.
   - Each product card says whether its price was checked ("✓ ₹1,949 · price checked on amazon.in just now") or came only from search results.
   - The agent rarely invents prices. Wrong prices came from stale or second-hand search snippets; see [ADR 0007](docs/adr/0007-live-price-check.md).
+- **Remembers you across chats.**
+  - After each answer, it learns lasting facts from what *you* said: brands you avoid, sizes, your usual spend, how you use things. One-off requests like "earbuds under 3000" aren't stored.
+  - When you change your mind ("boAt is fine now"), the old fact is replaced, not kept beside the new one.
+  - Each chat is summarized when you start a new one, or in the background if you just closed the tab.
+  - New chats see the strongest facts and the latest summaries, framed as possibly outdated notes, never instructions.
+  - **"🧠 What I remember"** in the sidebar shows everything it uses, with a delete button for each item and "Clear all memory".
+  - It never learns from web pages or its own answers, so a planted page can't become a lasting memory. See [ADR 0008](docs/adr/0008-long-term-memory.md).
 - **Suggests what to ask next.** Two or three follow-ups appear as buttons under each answer, after the answer is already on screen.
 - **Stays within limits.** Each turn has a step limit, a token budget and a cost budget. The agent doesn't repeat identical tool calls. If it hits a limit, it answers from what it found rather than failing.
 - **Treats the web as untrusted.**
@@ -73,7 +80,7 @@ flowchart LR
 ### One chat turn
 
 1. **The UI posts the message.** `POST /sessions/{id}/chat`. The API gives the request an id (`X-Request-ID`) and picks a Langfuse trace id up front, so even a failed turn can link to its trace.
-2. **`run_agent()` loads the context:** recent history, your preferences, the cart and the budget. It builds the system prompt from them.
+2. **`run_agent()` loads the context:** recent history, your preferences, the cart, the budget, the 15 strongest learned facts and the 3 latest past-chat summaries. It builds the system prompt from them.
 3. **The ReAct loop runs,** up to `MAX_AGENT_STEPS` times, within the token and cost budget:
    - One LLM call with the six tool schemas.
    - If the model asks for tools, they run. Web tools run in parallel, and cart, preference and budget tools run in order. Changes to the cart, preferences or budget first pass the request check.
@@ -81,7 +88,7 @@ flowchart LR
    - The loop ends when the model answers in text.
 4. **At a limit, the agent still answers.** If the step limit or a budget is reached, one final call with tools disabled answers from what was gathered.
 5. **Prices are checked on the store pages.** Each product link is fetched in parallel; prices that differ are corrected and out-of-stock products flagged (about 4s, only when the answer has product links).
-6. **The answer is returned.** The API sends back the answer, the products found, the tools used, the steps, the tokens and an estimated cost.
+6. **The answer is returned.** The API sends back the answer, the products found, the tools used, the steps, the tokens and an estimated cost. Then, after the response is sent, the small model learns any lasting facts from your message (`BackgroundTasks`).
 7. **The UI shows the answer, then fetches suggestions.** They come from `POST /sessions/{id}/suggestions`, on the small model.
 
 ### Code layout
@@ -89,16 +96,16 @@ flowchart LR
 | Path | What's there |
 | --- | --- |
 | `app/main.py` | App startup and shutdown, routes, error handling, request ids, `/livez` `/readyz` `/health` |
-| `app/routes/` | Session, chat, suggestions, cart and history endpoints; one error format (`errors.py`) |
-| `app/agent/` | The ReAct loop (`core.py`), system prompt, suggestions, the request check for cart, preference and budget changes, turn budgets and the repeat guard |
+| `app/routes/` | Session, chat, suggestions, summary, cart, history and memory endpoints; one error format (`errors.py`) |
+| `app/agent/` | The ReAct loop (`core.py`), system prompt, suggestions, long-term memory (`memory.py`), the request check for cart, preference and budget changes, turn budgets and the repeat guard |
 | `app/tools/` | The six tools, the schema builder, the registry that validates and dispatches tool calls, and web-content cleaning (`untrusted.py`) |
 | `app/llm/` | One interface over OpenAI Chat Completions, the OpenAI Responses API, Gemini and Groq; retries; provider-agnostic errors |
 | `app/db/` | aiosqlite connection, models and queries |
 | `app/tracing/` | Langfuse client with PII and key masking; the per-call generation handle |
 | `app/request_context.py` | Request ids, JSON logs, the 500 handler |
 | `frontend/app.py` | The Streamlit chat UI |
-| `tests/` | 223 offline tests, plus 5 that need the internet |
-| `evals/` | Live evals: prompt injection, request-check accuracy |
+| `tests/` | 339 offline tests, plus 5 that need the internet |
+| `evals/` | Live evals: prompt injection, request-check accuracy, scope, price accuracy, memory |
 | `scripts/smoke_test.py` | One real agent turn against your configured provider |
 
 Packages depend only on the ones below them:
@@ -389,11 +396,15 @@ Interactive docs are at http://localhost:8000/docs.
 
 | Endpoint | What it does |
 | --- | --- |
-| `POST /sessions` | Creates a session |
+| `POST /sessions` | Creates a session, and summarizes earlier unsummarized sessions in the background |
 | `POST /sessions/{id}/chat` | Runs one agent turn, with body `{"message": "..."}`. Returns `response`, `products_found`, `tool_calls_made`, `step_count`, `total_tokens`, `estimated_cost_usd` and `trace_url` |
 | `POST /sessions/{id}/suggestions` | Returns 2–3 follow-up messages for the conversation so far |
+| `POST /sessions/{id}/summarize` | Summarizes the session for future chats. Returns the summary, or `null` when there's nothing to summarize yet |
 | `GET /sessions/{id}/cart` | Returns the cart items and the total |
 | `GET /sessions/{id}/history` | Returns the messages and session details |
+| `GET /memory` | Everything remembered: preferences, learned facts and past-chat summaries |
+| `DELETE /memory/memories/{id}`, `/memory/episodes/{id}`, `/memory/preferences/{key}` | Forgets one item (404 if it's already gone). A forgotten chat summary isn't made again |
+| `DELETE /memory` | Forgets everything remembered. Chats stay |
 | `GET /livez` | The process is up. It checks nothing else |
 | `GET /readyz` | Startup is finished and the database answers. Returns 503 `not_ready` otherwise |
 | `GET /health` | Status, the models in use, and a Langfuse project link (used by the UI) |
@@ -417,8 +428,8 @@ Interactive docs are at http://localhost:8000/docs.
 ## Development
 
 ```bash
-uv run pytest -m "not network"          # 223 offline tests, about 4s (drop -m for the 5 network tests)
-uv run pytest --cov                     # with coverage (CI requires at least 85%; currently about 92%)
+uv run pytest -m "not network"          # 339 offline tests, about 8s (drop -m for the 5 network tests)
+uv run pytest --cov                     # with coverage (CI requires at least 85%; currently about 94%)
 uv run ruff check . && uv run ruff format .
 uv run mypy                             # strict
 uv run lint-imports                     # module layering
@@ -427,6 +438,7 @@ uv run python -m evals.prompt_injection # live: do poisoned web pages steer the 
 uv run python -m evals.request_check    # live: does the request check read real phrasing right?
 uv run python -m evals.scope            # live: shopping-only behaviour, no unnecessary tool calls
 uv run python -m evals.price_accuracy   # live: do shown prices match the store pages?
+uv run python -m evals.memory          # live: does memory learn the right things, only from the user?
 ```
 
 - **Tests are hermetic.** `tests/conftest.py` uses dummy keys, turns tracing off and gives each test a temporary database. The agent gets fake LLMs injected (`run_agent(..., llm=..., small_llm=...)`), and a safety net fails any test that would reach a real provider.
@@ -450,7 +462,8 @@ uv run python -m evals.price_accuracy   # live: do shown prices match the store 
   - Invisible characters are stripped: tag characters, zero-width characters and variation selectors.
   - Images are removed from answers.
   - Cart, preference and budget changes need the user's say-so, checked by a separate model call that sees only the user's message.
-  - `evals/prompt_injection.py` measures all of this against a real model.
+  - Long-term memory learns only from the user's own messages, never from web pages or the agent's answers, so a planted instruction can't become a lasting memory ([ADR 0008](docs/adr/0008-long-term-memory.md)).
+  - `evals/prompt_injection.py` and `evals/memory.py` measure all of this against a real model.
 - **Secrets.**
   - Keys are `SecretStr`, and traces are masked for emails, key patterns, and the configured keys by value.
   - `.env` is gitignored, and gitleaks runs on every commit and in CI.

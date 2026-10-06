@@ -5,6 +5,17 @@ Notable changes to ShopSense. The format follows [Keep a Changelog](https://keep
 ## [Unreleased]
 
 ### Added
+- **Long-term memory across chats.** See ADR 0008.
+  - After each answer, the small model learns lasting facts from what the user said: brands avoided, sizes, usual spend, how they use things. It runs in the background, so the answer never waits.
+    - One-off requests aren't stored.
+    - A known fact isn't stored twice.
+    - A changed fact replaces the old one.
+  - Each chat is summarized on "New Chat" (the sidebar's "New Session" button, renamed). Chats that just ended with a closed tab are summarized in the background when the next chat starts.
+  - New chats see the 15 strongest facts and the 3 latest summaries, framed as possibly outdated notes, never instructions.
+  - **Safe from poisoning:** memory learns only from the user's own messages and the cart, never from web pages or the agent's answers.
+  - **"🧠 What I remember"** in the sidebar lists preferences, learned facts and past-chat summaries, each with a delete button, plus "Clear all memory".
+  - **New endpoints:** `POST /sessions/{id}/summarize`, `GET /memory` and the `DELETE /memory/...` routes.
+  - **Measured** with the new `evals/memory.py` on `gemma4:31b`: extraction 24/24, contradictions 8/8, poisoning 2/2.
 - **Prices are checked on the store pages before an answer is shown.**
   - What it does:
     - Each product link is fetched, and the price beside it is compared to the rupee.

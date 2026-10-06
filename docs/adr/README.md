@@ -11,3 +11,4 @@ Short records of decisions that shaped ShopSense. Each one gives the context, th
 | [0005](0005-untrusted-web-content.md) | Treat web content as untrusted; changes need the user's say-so | Accepted |
 | [0006](0006-hand-written-agent-loop.md) | A hand-written ReAct loop instead of an agent framework | Accepted |
 | [0007](0007-live-price-check.md) | Check answer prices against the live store pages | Accepted |
+| [0008](0008-long-term-memory.md) | Long-term memory learned only from the user's own words | Accepted |

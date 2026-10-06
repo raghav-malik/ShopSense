@@ -22,7 +22,7 @@ Each package may import only from packages *below* it. `lint-imports` enforces t
 ```
 app.main                                   app startup, routes, middleware, probes
 app.routes                                 HTTP endpoints and the error format
-app.agent                                  the ReAct loop, prompt, guardrails, request check, suggestions
+app.agent                                  the ReAct loop, prompt, guardrails, request check, suggestions, memory
 app.tools                                  tools and the tool registry
 app.llm                                    LLM adapters, types, errors
 app.db | app.tracing | app.request_context independent of each other
@@ -58,12 +58,13 @@ app.config                                 settings
   - `evals/request_check.py`
   - `evals/scope.py`: shopping-only behaviour and no unnecessary tool calls
   - `evals/price_accuracy.py`: do the prices shown next to links match the store pages?
+  - `evals/memory.py`: what long-term memory learns, contradictions, and memory poisoning
 
 ## Tracing (Langfuse)
 
-- **One trace per chat turn:** the `run-agent` root, with `session_id` and `request_id` on every observation. Follow-up suggestions are a separate `suggest-follow-ups` trace in the same session.
+- **One trace per chat turn:** the `run-agent` root, with `session_id` and `request_id` on every observation. Follow-up suggestions (`suggest-follow-ups`), memory extraction (`extract-memories`) and session summaries (`summarize-session`) are separate traces in the same session.
 - **One generation per LLM attempt,** through `GenerationTrace` (`app/tracing/generation.py`): opened before the call, completed after. Tracing must never break a request, so every Langfuse call in it is guarded.
-- **Generation names are stable.** Dashboards and evaluators filter on them, so don't rename them casually: `generate-agent-response`, `answer-at-limit`, `generate-suggestions`, `check-user-request`.
+- **Generation names are stable.** Dashboards and evaluators filter on them, so don't rename them casually: `generate-agent-response`, `answer-at-limit`, `generate-suggestions`, `check-user-request`, `generate-memories`, `generate-session-summary`.
 - **Add `trace_metadata`** with `step` and `operation` on every LLM call.
 
 ## Security invariants
@@ -74,6 +75,7 @@ Don't weaken these without an explicit decision, and record one in `docs/adr/`:
   - Anything from a web page or search result goes through `clean_text()`, and successful results carry `WEB_CONTENT_NOTICE`.
   - Answers never contain images; `_without_images` in `app/agent/core.py` enforces this.
 - **Changes need the user's say-so.** A tool call that changes stored data must be in `_CHANGES` in `app/agent/request_check.py`. The check sees only the user's message and the previous reply, never tool results.
+- **Memory learns only from the user.** Long-term memory (`app/agent/memory.py`) extracts facts from the user's messages only, with the previous reply as labelled context, and builds session summaries from user messages and the cart. Never pass it tool results or the agent's answer: whatever it saves is in every future prompt (ADR 0008).
 - **Only public addresses are fetched.** URLs are fetched only through `extract._fetch_html`. It resolves the host, blocks non-public addresses, connects to the checked IP, and re-checks every redirect.
 - **Secrets stay secret.**
   - Keys are `SecretStr`. Call `.get_secret_value()` only where the key is sent.
