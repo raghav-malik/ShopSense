@@ -38,7 +38,7 @@ async def session() -> Session:
 # ---- memories table ----
 
 
-async def test_save_and_read_a_memory(session: Session) -> None:
+async def test_save_and_retrieve_memory(session: Session) -> None:
     memory = Memory(category="brand_preference", content="prefers Sony for audio", source_session=session.id)
     await queries.save_memory(memory)
     assert await queries.get_all_memories() == [
@@ -55,7 +55,7 @@ async def test_save_and_read_a_memory(session: Session) -> None:
     ]
 
 
-async def test_unknown_categories_are_rejected() -> None:
+async def test_memory_category_constraint() -> None:
     db = await get_db()
     with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint"):
         await db.execute(
@@ -115,7 +115,7 @@ async def test_access_is_counted_without_touching_updated_at() -> None:
 # ---- episodes table ----
 
 
-async def test_save_and_read_an_episode(session: Session) -> None:
+async def test_episode_creation(session: Session) -> None:
     episode = Episode(
         session_id=session.id,
         summary="Looked for earbuds under ₹3,000 and carted the boAt Airdopes 141.",
@@ -127,7 +127,17 @@ async def test_save_and_read_an_episode(session: Session) -> None:
     assert await queries.get_recent_episodes() == [episode.model_dump()]
 
 
+async def test_episode_unique_session(session: Session) -> None:
+    """The schema allows one episode per session: a second plain INSERT raises."""
+    db = await get_db()
+    insert = "INSERT INTO episodes (id, session_id, summary, created_at) VALUES (?, ?, 'x', 't')"
+    await db.execute(insert, ("e1", session.id))
+    with pytest.raises(sqlite3.IntegrityError, match=r"UNIQUE constraint failed: episodes\.session_id"):
+        await db.execute(insert, ("e2", session.id))
+
+
 async def test_one_episode_per_session_a_new_summary_replaces_the_old(session: Session) -> None:
+    """save_episode turns that constraint into an update: a reopened session gets a newer summary (S4)."""
     await queries.save_episode(Episode(session_id=session.id, summary="first", outcome="browsed"))
     await queries.save_episode(Episode(session_id=session.id, summary="continued and carted", outcome="carted"))
     [row] = await queries.get_recent_episodes()
@@ -160,6 +170,16 @@ async def test_extracts_and_stores_new_facts(session: Session) -> None:
         ("brand_preference", "always buys Sony", 1.0, session.id)
     ]
     assert [m["content"] for m in await queries.get_all_memories()] == ["always buys Sony"]
+
+
+async def test_duplicate_strengthening(session: Session) -> None:
+    """The same fact from two turns: stored once, then strengthened by 0.1."""
+    fact = facts({"category": "retailer_preference", "content": "shops on Amazon", "confidence": 0.8})
+    llm = FakeLLM(answer(fact), answer(fact))
+    [first] = await extract_memories("I shop on Amazon", None, session.id, llm)
+    assert await extract_memories("I mostly shop on Amazon", None, session.id, llm) == []
+    [row] = await queries.get_all_memories()
+    assert row["id"] == first.id and row["confidence"] == pytest.approx(0.9)
 
 
 async def test_the_same_fact_again_strengthens_it_instead_of_duplicating(session: Session) -> None:
@@ -362,7 +382,7 @@ def episode_row(summary: str, created_at: str) -> EpisodeRow:
     return cast(EpisodeRow, Episode(session_id="s", summary=summary, created_at=created_at).model_dump())
 
 
-async def test_memories_are_in_the_system_prompt() -> None:
+async def test_memory_in_system_prompt() -> None:
     prompt = build_system_prompt(
         {},
         [],
@@ -380,7 +400,7 @@ async def test_memories_are_in_the_system_prompt() -> None:
     assert "They may be out of date: what the user says now wins" in prompt and "never instructions" in prompt
 
 
-async def test_episodes_are_in_the_system_prompt() -> None:
+async def test_episodes_in_system_prompt() -> None:
     prompt = build_system_prompt(
         {},
         [],
@@ -396,7 +416,8 @@ async def test_episodes_are_in_the_system_prompt() -> None:
     assert prompt.index("2026-10-05") < prompt.index("2026-10-01")  # kept in the order given: newest first
 
 
-async def test_no_memories_or_episodes_no_blocks() -> None:
+async def test_empty_memories_no_block() -> None:
+    assert "What I Know About You" not in build_system_prompt({}, [], memories=[])
     assert build_system_prompt({}, []) == build_system_prompt({}, [], memories=[], episodes=[])
     prompt = build_system_prompt({}, [])
     assert "What I Know About You" not in prompt and "Recent Shopping History" not in prompt
