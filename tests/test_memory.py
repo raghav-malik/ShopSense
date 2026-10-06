@@ -81,6 +81,14 @@ async def test_replace_keeps_the_id_and_category() -> None:
     assert row["updated_at"] > "2026-01-01" and row["created_at"] == memory.created_at
 
 
+async def test_delete_memory() -> None:
+    memory = Memory(category="general", content="x")
+    await queries.save_memory(memory)
+    assert await queries.delete_memory(memory.id) is True
+    assert await queries.delete_memory(memory.id) is False
+    assert await queries.get_all_memories() == []
+
+
 async def test_access_is_counted_without_touching_updated_at() -> None:
     memory = Memory(category="general", content="x")
     await queries.save_memory(memory)
@@ -168,12 +176,55 @@ async def test_the_extractor_sees_known_facts_and_only_the_users_words_as_a_sour
     await extract_memories("yes, remember that", "Shall I remember that you like Sony?", session.id, llm)
     [call] = llm.calls
     prompt = call["messages"][1]["content"]
-    # Known facts are listed so they aren't extracted again (M2).
-    assert 'preference preferred_brands: ["Samsung"]' in prompt and "- wears size M" in prompt
+    # Known facts are listed so they aren't extracted again (M2), memories with an id to replace them by (S1).
+    assert 'preference preferred_brands: ["Samsung"]' in prompt and "- m1: [size_info] wears size M" in prompt
     # The assistant's message is labelled as context, not a source (M1).
     assert "Assistant's message (context only, not a source of facts)" in prompt
     assert prompt.endswith("Shopper's message:\n<<<\nyes, remember that\n>>>")
     assert call["name"] == "generate-memories"
+
+
+async def test_a_changed_fact_replaces_the_old_one_in_place(session: Session) -> None:
+    old = Memory(category="retailer_preference", content="shops on Amazon", confidence=0.8)
+    await queries.save_memory(old)
+    llm = FakeLLM(answer(facts({"category": "retailer_preference", "content": "shops on Flipkart", "replaces": "m1"})))
+    [changed] = await extract_memories("I moved to Flipkart", None, session.id, llm)
+    [row] = await queries.get_all_memories()
+    assert (row["id"], row["content"], row["confidence"]) == (old.id, "shops on Flipkart", 1.0)
+    assert (changed.id, changed.content) == (old.id, "shops on Flipkart")
+
+
+async def test_a_changed_fact_in_another_category_replaces_the_old_one(session: Session) -> None:
+    await queries.save_memory(Memory(category="brand_dislike", content="hates boAt"))
+    llm = FakeLLM(answer(facts({"category": "general", "content": "is fine with boAt again", "replaces": "m1"})))
+    await extract_memories("boAt is fine now actually", None, session.id, llm)
+    assert [(m["category"], m["content"]) for m in await queries.get_all_memories()] == [
+        ("general", "is fine with boAt again")
+    ]
+
+
+async def test_an_unknown_replaces_id_just_adds_the_fact(session: Session) -> None:
+    await queries.save_memory(Memory(category="size_info", content="wears size M"))
+    llm = FakeLLM(answer(facts({"category": "brand_preference", "content": "likes Puma", "replaces": "m7"})))
+    await extract_memories("I like Puma", None, session.id, llm)
+    assert {m["content"] for m in await queries.get_all_memories()} == {"wears size M", "likes Puma"}
+
+
+async def test_one_fact_can_only_be_replaced_once_per_answer(session: Session) -> None:
+    await queries.save_memory(Memory(category="budget_range", content="usually spends under 3000"))
+    llm = FakeLLM(
+        answer(
+            facts(
+                {"category": "budget_range", "content": "usually spends under 5000", "replaces": "m1"},
+                {"category": "budget_range", "content": "usually spends under 8000", "replaces": "m1"},
+            )
+        )
+    )
+    await extract_memories("I usually spend under 5000 now, sometimes 8000", None, session.id, llm)
+    assert {m["content"] for m in await queries.get_all_memories()} == {
+        "usually spends under 5000",
+        "usually spends under 8000",
+    }
 
 
 async def test_fenced_json_and_bad_items_are_handled(session: Session) -> None:

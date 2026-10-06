@@ -235,6 +235,14 @@ async def replace_memory(memory_id: str, new_content: str) -> None:
     await db.commit()
 
 
+async def delete_memory(memory_id: str) -> bool:
+    """Forget a memory; False if there was no such memory."""
+    db = await get_db()
+    cursor = await db.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+    await db.commit()
+    return cursor.rowcount > 0
+
+
 async def increment_access(memory_id: str) -> None:
     """Count one retrieval of a memory (for pruning later); doesn't change updated_at."""
     db = await get_db()
