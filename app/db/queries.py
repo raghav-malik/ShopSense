@@ -1,10 +1,22 @@
-"""Every database read and write: sessions, messages, cart and preferences."""
+"""Every database read and write: sessions, messages, cart, preferences, memories and episodes."""
 
 import json
 from typing import Any, cast
 
 from app.db.database import get_db
-from app.db.models import CartItem, CartItemRow, Message, MessageRow, Session, new_id, now_iso
+from app.db.models import (
+    CartItem,
+    CartItemRow,
+    Episode,
+    EpisodeRow,
+    Memory,
+    MemoryRow,
+    Message,
+    MessageRow,
+    Session,
+    new_id,
+    now_iso,
+)
 
 # ---- Sessions ----
 
@@ -158,3 +170,112 @@ async def set_preference(key: str, value: object) -> None:
         (new_id(), key, encoded, now_iso()),
     )
     await db.commit()
+
+
+# ---- Memories ----
+
+
+async def get_all_memories(limit: int = 20) -> list[MemoryRow]:
+    """The `limit` strongest memories: highest confidence first, then most recently updated."""
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        "SELECT * FROM memories ORDER BY confidence DESC, updated_at DESC LIMIT ?",
+        (limit,),
+    )
+    return [cast(MemoryRow, dict(r)) for r in rows]
+
+
+async def get_memories_by_category(category: str, limit: int = 10) -> list[MemoryRow]:
+    """The `limit` strongest memories in one category, in the same order as get_all_memories."""
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        "SELECT * FROM memories WHERE category = ? ORDER BY confidence DESC, updated_at DESC LIMIT ?",
+        (category, limit),
+    )
+    return [cast(MemoryRow, dict(r)) for r in rows]
+
+
+async def save_memory(memory: Memory) -> None:
+    """Store a new memory."""
+    db = await get_db()
+    await db.execute(
+        """INSERT INTO memories (id, category, content, confidence, source_session, created_at, updated_at, access_count)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            memory.id,
+            memory.category,
+            memory.content,
+            memory.confidence,
+            memory.source_session,
+            memory.created_at,
+            memory.updated_at,
+            memory.access_count,
+        ),
+    )
+    await db.commit()
+
+
+async def update_memory_confidence(memory_id: str, confidence: float) -> None:
+    """Strengthen or weaken a memory. A new mention also makes it the most recently updated."""
+    db = await get_db()
+    await db.execute(
+        "UPDATE memories SET confidence = ?, updated_at = ? WHERE id = ?",
+        (confidence, now_iso(), memory_id),
+    )
+    await db.commit()
+
+
+async def replace_memory(memory_id: str, new_content: str) -> None:
+    """Rewrite a memory the user has contradicted, keeping its id, category and history."""
+    db = await get_db()
+    await db.execute(
+        "UPDATE memories SET content = ?, updated_at = ? WHERE id = ?",
+        (new_content, now_iso(), memory_id),
+    )
+    await db.commit()
+
+
+async def increment_access(memory_id: str) -> None:
+    """Count one retrieval of a memory (for pruning later); doesn't change updated_at."""
+    db = await get_db()
+    await db.execute("UPDATE memories SET access_count = access_count + 1 WHERE id = ?", (memory_id,))
+    await db.commit()
+
+
+# ---- Episodes ----
+
+
+async def save_episode(episode: Episode) -> None:
+    """Store a session's summary, replacing an earlier one for the same session.
+
+    One episode per session (UNIQUE session_id), but a session can be reopened
+    and continued after it was summarized, so a newer summary replaces the old.
+    """
+    db = await get_db()
+    await db.execute(
+        """INSERT INTO episodes (id, session_id, summary, products_searched, products_carted, outcome, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(session_id) DO UPDATE SET
+               summary = excluded.summary,
+               products_searched = excluded.products_searched,
+               products_carted = excluded.products_carted,
+               outcome = excluded.outcome,
+               created_at = excluded.created_at""",
+        (
+            episode.id,
+            episode.session_id,
+            episode.summary,
+            episode.products_searched,
+            episode.products_carted,
+            episode.outcome,
+            episode.created_at,
+        ),
+    )
+    await db.commit()
+
+
+async def get_recent_episodes(limit: int = 5) -> list[EpisodeRow]:
+    """The `limit` most recent session summaries, newest first."""
+    db = await get_db()
+    rows = await db.execute_fetchall("SELECT * FROM episodes ORDER BY created_at DESC LIMIT ?", (limit,))
+    return [cast(EpisodeRow, dict(r)) for r in rows]
