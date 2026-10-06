@@ -81,6 +81,42 @@ async def init_db() -> None:
             value           TEXT NOT NULL,
             updated_at      TEXT NOT NULL
         );
+
+        -- Memory (MEMORY_DESIGN.md). preferences above holds what the user
+        -- explicitly asked to save; memories holds facts learned from what they
+        -- said, and episodes one summary per past session.
+        CREATE TABLE IF NOT EXISTS memories (
+            id              TEXT PRIMARY KEY,
+            category        TEXT NOT NULL CHECK(category IN (
+                'brand_preference', 'brand_dislike', 'budget_range',
+                'category_interest', 'retailer_preference', 'product_feedback',
+                'size_info', 'shopping_style', 'general'
+            )),
+            content         TEXT NOT NULL,
+            confidence      REAL DEFAULT 1.0,
+            source_session  TEXT REFERENCES sessions(id),
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL,
+            access_count    INTEGER DEFAULT 0
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_memories_category
+            ON memories(category);
+
+        CREATE TABLE IF NOT EXISTS episodes (
+            id              TEXT PRIMARY KEY,
+            session_id      TEXT NOT NULL UNIQUE REFERENCES sessions(id),
+            summary         TEXT NOT NULL,
+            products_searched TEXT,
+            products_carted  TEXT,
+            outcome         TEXT CHECK(outcome IN (
+                'purchased', 'carted', 'browsed', 'abandoned'
+            )),
+            created_at      TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_episodes_created
+            ON episodes(created_at DESC);
     """)
     await db.commit()
 

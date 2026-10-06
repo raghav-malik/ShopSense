@@ -7,6 +7,20 @@ from typing import Literal, TypedDict
 from pydantic import BaseModel, Field
 
 MessageRole = Literal["user", "assistant", "tool"]
+# Same values as the CHECK constraints on memories.category and episodes.outcome.
+MemoryCategory = Literal[
+    "brand_preference",
+    "brand_dislike",
+    "budget_range",
+    "category_interest",
+    "retailer_preference",
+    "product_feedback",
+    "size_info",
+    "shopping_style",
+    "general",
+]
+# ShopSense can't place orders, so "purchased" is only known if the user says so.
+EpisodeOutcome = Literal["purchased", "carted", "browsed", "abandoned"]
 
 
 def new_id() -> str:
@@ -65,6 +79,35 @@ class Preference(BaseModel):
     updated_at: str = Field(default_factory=now_iso)
 
 
+class Memory(BaseModel):
+    """A fact about the user, learned from what they said rather than saved on request.
+
+    `confidence` is 1.0 when stated outright and lower when inferred; a repeated
+    mention strengthens it. `source_session` is where it was learned.
+    """
+
+    id: str = Field(default_factory=new_id)
+    category: MemoryCategory
+    content: str
+    confidence: float = 1.0
+    source_session: str | None = None
+    created_at: str = Field(default_factory=now_iso)
+    updated_at: str = Field(default_factory=now_iso)
+    access_count: int = 0
+
+
+class Episode(BaseModel):
+    """A summary of one past shopping session; `products_*` are JSON-encoded lists of names."""
+
+    id: str = Field(default_factory=new_id)
+    session_id: str
+    summary: str
+    products_searched: str | None = None  # JSON array
+    products_carted: str | None = None  # JSON array
+    outcome: EpisodeOutcome | None = None
+    created_at: str = Field(default_factory=now_iso)
+
+
 # Rows as returned by queries.py: one key per column, so readers of a row are
 # checked against the schema in database.py.
 
@@ -93,3 +136,28 @@ class CartItemRow(TypedDict):
     url: str
     source: str | None
     added_at: str
+
+
+class MemoryRow(TypedDict):
+    """A row of the memories table, as queries return it."""
+
+    id: str
+    category: MemoryCategory
+    content: str
+    confidence: float
+    source_session: str | None
+    created_at: str
+    updated_at: str
+    access_count: int
+
+
+class EpisodeRow(TypedDict):
+    """A row of the episodes table, as queries return it."""
+
+    id: str
+    session_id: str
+    summary: str
+    products_searched: str | None
+    products_carted: str | None
+    outcome: EpisodeOutcome | None
+    created_at: str
