@@ -513,6 +513,14 @@ async def test_episodes_in_system_prompt() -> None:
     assert prompt.index("2026-10-05") < prompt.index("2026-10-01")  # kept in the order given: newest first
 
 
+async def test_remembered_dislikes_never_block_a_request() -> None:
+    """With "dislikes boAt" remembered, gemma4 refused to compare the boAt earbuds the user named."""
+    prompt = build_system_prompt({}, [], memories=[memory_row("dislikes boAt", category="brand_dislike")])
+    assert "they never limit what the user can ask for" in prompt
+    assert "even ones they've said they dislike, and don't ask whether to go ahead" in prompt
+    assert "They're preferences, not restrictions" in prompt
+
+
 async def test_empty_memories_no_block() -> None:
     assert "What I Know About You" not in build_system_prompt({}, [], memories=[])
     assert build_system_prompt({}, []) == build_system_prompt({}, [], memories=[], episodes=[])
