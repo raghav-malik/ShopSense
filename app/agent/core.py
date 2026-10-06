@@ -33,6 +33,7 @@ from app.agent.price_check import check_prices
 from app.agent.prompts import build_system_prompt
 from app.agent.request_check import RequestCheck, change_kind, refusal
 from app.agent.schemas import AgentResponse, PriceCheck
+from app.agent.titles import generate_title, placeholder_title
 from app.agent.trace_attributes import trace_attributes
 from app.config import settings
 from app.db import queries
@@ -125,12 +126,17 @@ async def _run_agent(
     history = await queries.get_messages(session_id)
     preferences = await queries.get_all_preferences()
     cart = await queries.get_cart(session_id)
-    # Long-term memory: what's been learned about the user, and recent sessions.
+    # Long-term memory: what's been learned about the user, recent chats, and
+    # what they wrote about themselves (user.md).
     memories = await queries.get_all_memories(limit=15)
     episodes = await queries.get_recent_episodes(limit=3)
+    profile = await queries.get_user_profile()
+    first_message = not any(m["role"] == "user" for m in history)
 
     # 2. Build messages array
-    system_prompt = build_system_prompt(preferences, cart, session.budget, memories, episodes)
+    system_prompt = build_system_prompt(
+        preferences, cart, session.budget, memories, episodes, user_profile=profile["content"]
+    )
     messages: list[ChatMessage] = [{"role": "system", "content": system_prompt}]
     messages.extend(_replay_history(history))
 
@@ -150,6 +156,11 @@ async def _run_agent(
             content=user_message,
         )
     )
+    # The chat is in the sidebar from its first message, titled by it until a
+    # short title is made after the answer.
+    new_title = first_message and session.title is None
+    if new_title:
+        await queries.set_session_title(session_id, placeholder_title(user_message), "placeholder")
 
     # 3. ReAct loop
     tools_schema = get_tool_schemas()
@@ -191,7 +202,7 @@ async def _run_agent(
                     token_count=response.usage.get("total_tokens", 0),
                 )
             )
-            _schedule_memory_extraction(schedule, user_message, previous_reply, session_id, small_llm)
+            _schedule_after_answer(schedule, user_message, previous_reply, session_id, small_llm, new_title)
 
             return AgentResponse(
                 response=final_text,
@@ -270,7 +281,7 @@ async def _run_agent(
             content=final_text,
         )
     )
-    _schedule_memory_extraction(schedule, user_message, previous_reply, session_id, small_llm)
+    _schedule_after_answer(schedule, user_message, previous_reply, session_id, small_llm, new_title)
     return AgentResponse(
         response=final_text,
         tool_calls_made=tools_called,
@@ -298,17 +309,26 @@ async def _check_prices_traced(answer: str) -> tuple[str, list[PriceCheck]]:
     return checked, checks
 
 
-def _schedule_memory_extraction(
-    schedule: Schedule | None, user_message: str, previous_reply: str | None, session_id: str, small_llm: LLMAdapter
+def _schedule_after_answer(
+    schedule: Schedule | None,
+    user_message: str,
+    previous_reply: str | None,
+    session_id: str,
+    small_llm: LLMAdapter,
+    new_title: bool,
 ) -> None:
-    """Learn from this turn after the answer is sent, if the caller can schedule it.
+    """Work that runs after the answer is sent, if the caller can schedule it:
+    the chat's title (after its first answer), then learning from this turn.
 
     The extractor gets the user's message and the reply they were answering,
     not this turn's answer: the answer carries web text, and only the user's
     own words may become lasting memories (MEMORY_IMPLEMENTATION.md, M1).
     """
-    if schedule is not None:
-        schedule(_extract_memories_safe, user_message, previous_reply, session_id, small_llm)
+    if schedule is None:
+        return
+    if new_title:
+        schedule(generate_title, session_id, user_message, small_llm)
+    schedule(_extract_memories_safe, user_message, previous_reply, session_id, small_llm)
 
 
 async def _extract_memories_safe(
@@ -409,7 +429,7 @@ def _replay_history(history: list[MessageRow]) -> list[ChatMessage]:
 
 
 # Tools that only read the web (no session state) can run at the same time,
-# bounded like Airtap's parallel batches. The others (cart, preferences) run one
+# a few at once. The others (cart, preferences) run one
 # at a time in the order the model asked for them, so a cart change and a cart
 # view in the same step see each other.
 CONCURRENT_TOOLS = frozenset({"search_products", "extract_product_info", "compare_products"})

@@ -27,7 +27,15 @@ from pydantic import BaseModel, Field, TypeAdapter, ValidationError, field_valid
 
 from app.agent.trace_attributes import trace_attributes
 from app.db import queries
-from app.db.models import Episode, EpisodeOutcome, Memory, MemoryCategory, MemoryRow, MessageRow
+from app.db.models import (
+    Episode,
+    EpisodeOutcome,
+    Memory,
+    MemoryCategory,
+    MemoryRow,
+    MessageRow,
+    user_md_is_blank,
+)
 from app.llm.adapter import LLMAdapter, get_small_llm_adapter
 from app.llm.types import ChatMessage
 from app.tools.untrusted import clean_text
@@ -144,8 +152,9 @@ async def extract_memories(
             langfuse.update_current_span(input=user_message)
             known = await queries.get_all_memories(limit=_KNOWN_MEMORIES)
             preferences = await queries.get_all_preferences()
+            profile = (await queries.get_user_profile())["content"]
             response = await llm.chat(
-                _extraction_messages(user_message, assistant_response, preferences, known),
+                _extraction_messages(user_message, assistant_response, preferences, known, profile),
                 name="generate-memories",
                 trace_metadata={"operation": "memory_extraction"},
             )
@@ -262,10 +271,21 @@ async def summarize_pending_sessions(exclude_session_id: str, llm: LLMAdapter | 
 
 
 def _extraction_messages(
-    user_message: str, assistant_response: str | None, preferences: dict[str, Any], known: list[MemoryRow]
+    user_message: str,
+    assistant_response: str | None,
+    preferences: dict[str, Any],
+    known: list[MemoryRow],
+    profile: str = "",
 ) -> list[ChatMessage]:
-    """The extraction request: known facts, the assistant's message as context, then the shopper's message."""
-    known_lines = [f"- preference {key}: {json.dumps(value)}" for key, value in preferences.items()]
+    """The extraction request: known facts, the assistant's message as context, then the shopper's message.
+
+    What the user wrote in user.md is known too, so it isn't copied into
+    memories: user.md is theirs to keep, and a copy would go stale when they edit it.
+    """
+    known_lines = []
+    if profile and not user_md_is_blank(profile):
+        known_lines += [f"- user.md: {line.strip()}" for line in profile.splitlines() if line.strip()]
+    known_lines += [f"- preference {key}: {json.dumps(value)}" for key, value in preferences.items()]
     known_lines += [f"- {ref}: [{m['category']}] {m['content']}" for ref, m in _refs(known).items()]
     parts = [f"Already known:\n{chr(10).join(known_lines) if known_lines else '(nothing yet)'}"]
     if assistant_response:

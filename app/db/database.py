@@ -6,6 +6,7 @@ from pathlib import Path
 import aiosqlite
 
 from app.config import PROJECT_ROOT, settings
+from app.db.models import USER_MD_TEMPLATE, now_iso
 
 # Module-level connection reference
 _db: aiosqlite.Connection | None = None
@@ -44,7 +45,10 @@ async def init_db() -> None:
             created_at      TEXT NOT NULL,
             updated_at      TEXT NOT NULL,
             budget          REAL,
-            context_summary TEXT
+            context_summary TEXT,
+            title           TEXT,
+            title_source    TEXT CHECK(title_source IN ('placeholder', 'llm', 'user')),
+            deleted_at      TEXT
         );
 
         CREATE TABLE IF NOT EXISTS messages (
@@ -124,8 +128,52 @@ async def init_db() -> None:
             session_id      TEXT PRIMARY KEY REFERENCES sessions(id),
             forgotten_at    TEXT NOT NULL
         );
+
+        -- The user's own user.md (one row): what to call them and other notes
+        -- about themselves. Written only by the user.
+        CREATE TABLE IF NOT EXISTS user_profile (
+            id              INTEGER PRIMARY KEY CHECK(id = 1),
+            content         TEXT NOT NULL,
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL
+        );
     """)
+    await _migrate(db)
+    now = now_iso()
+    await db.execute(
+        "INSERT OR IGNORE INTO user_profile (id, content, created_at, updated_at) VALUES (1, ?, ?, ?)",
+        (USER_MD_TEMPLATE, now, now),
+    )
     await db.commit()
+
+
+# Columns added after a table first shipped: CREATE TABLE IF NOT EXISTS doesn't
+# add them to an existing database, so they're added here, once.
+_ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
+    "sessions": [
+        ("title", "TEXT"),
+        ("title_source", "TEXT CHECK(title_source IN ('placeholder', 'llm', 'user'))"),
+        ("deleted_at", "TEXT"),
+    ],
+}
+
+
+async def _migrate(db: aiosqlite.Connection) -> None:
+    """Add missing columns, then give chats from before titles existed their
+    first message as a title."""
+    for table, columns in _ADDED_COLUMNS.items():
+        existing = {row[1] for row in await db.execute_fetchall(f"PRAGMA table_info({table})")}
+        for name, definition in columns:
+            if name not in existing:
+                await db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+    await db.execute(
+        """UPDATE sessions SET title_source = 'placeholder', title = (
+               SELECT substr(content, 1, 60) FROM messages m
+               WHERE m.session_id = sessions.id AND m.role = 'user'
+               ORDER BY m.created_at, m.rowid LIMIT 1)
+           WHERE title IS NULL
+             AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = sessions.id AND m.role = 'user')"""
+    )
 
 
 async def close_db() -> None:

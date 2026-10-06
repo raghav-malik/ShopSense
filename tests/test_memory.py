@@ -14,6 +14,7 @@ from app.config import settings
 from app.db import queries
 from app.db.database import get_db
 from app.db.models import (
+    ChatEpisodeRow,
     Episode,
     EpisodeRow,
     Memory,
@@ -124,7 +125,8 @@ async def test_episode_creation(session: Session) -> None:
         outcome="carted",
     )
     await queries.save_episode(episode)
-    assert await queries.get_recent_episodes() == [episode.model_dump()]
+    [row] = await queries.get_recent_episodes()
+    assert row == {**episode.model_dump(), "chat_title": None, "last_active_at": session.updated_at}
 
 
 async def test_episode_unique_session(session: Session) -> None:
@@ -149,11 +151,25 @@ async def test_episodes_need_a_real_session() -> None:
         await queries.save_episode(Episode(session_id="no-such-session", summary="x"))
 
 
-async def test_recent_episodes_newest_first() -> None:
-    for day in ("2026-10-01", "2026-10-03", "2026-10-02"):
+async def set_last_active(session_id: str, when: str) -> None:
+    db = await get_db()
+    await db.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (when, session_id))
+    await db.commit()
+
+
+async def test_recent_episodes_follow_when_the_chat_happened_not_when_it_was_summarized() -> None:
+    # Chatted on the 1st, 3rd and 2nd; all summarized later, in another order.
+    for chatted, summarized in (
+        ("2026-10-01", "2026-10-09"),
+        ("2026-10-03", "2026-10-04"),
+        ("2026-10-02", "2026-10-08"),
+    ):
         s = await queries.create_session()
-        await queries.save_episode(Episode(session_id=s.id, summary=day, created_at=day))
-    assert [e["summary"] for e in await queries.get_recent_episodes(limit=2)] == ["2026-10-03", "2026-10-02"]
+        await set_last_active(s.id, f"{chatted}T10:00:00+00:00")
+        await queries.save_episode(Episode(session_id=s.id, summary=chatted, created_at=summarized))
+    rows = await queries.get_recent_episodes(limit=2)
+    assert [e["summary"] for e in rows] == ["2026-10-03", "2026-10-02"]
+    assert rows[0]["last_active_at"] == "2026-10-03T10:00:00+00:00"
 
 
 # ---- which sessions still need a summary (M3) ----
@@ -418,7 +434,8 @@ async def test_summarizes_a_session_into_an_episode(session: Session) -> None:
     assert (episode.summary, episode.outcome) == ("Looked for earbuds.", "carted")  # the cart decides
     assert json.loads(episode.products_searched or "") == ["earbuds"]
     assert json.loads(episode.products_carted or "") == ["boAt Airdopes 141"]  # from the cart, not the model
-    assert await queries.get_recent_episodes() == [episode.model_dump()]
+    [row] = await queries.get_recent_episodes()
+    assert {k: v for k, v in row.items() if k in episode.model_dump()} == episode.model_dump()
     assert llm.calls[0]["name"] == "generate-session-summary"
 
 
@@ -475,8 +492,10 @@ def memory_row(content: str, confidence: float = 1.0, category: MemoryCategory =
     return cast(MemoryRow, Memory(category=category, content=content, confidence=confidence).model_dump())
 
 
-def episode_row(summary: str, created_at: str) -> EpisodeRow:
-    return cast(EpisodeRow, Episode(session_id="s", summary=summary, created_at=created_at).model_dump())
+def episode_row(summary: str, last_active_at: str) -> ChatEpisodeRow:
+    """An episode of a chat last active at `last_active_at`, summarized a week later."""
+    episode = Episode(session_id="s", summary=summary, created_at="2026-12-31T00:00:00+00:00")
+    return cast(ChatEpisodeRow, {**episode.model_dump(), "chat_title": None, "last_active_at": last_active_at})
 
 
 async def test_memory_in_system_prompt() -> None:
@@ -603,11 +622,15 @@ async def test_extraction_is_scheduled_with_the_reply_the_user_answered(session:
 async def test_extraction_is_scheduled_after_a_turn_limit_answer_too(
     session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    llm = FakeLLM(answer("Hi! What are you shopping for?"))
+    await core.run_agent(session.id, "hey", llm=llm, small_llm=llm)  # not the first message: no title job
     monkeypatch.setattr(settings, "max_agent_steps", 0)
     scheduled = Scheduled()
     llm = FakeLLM(answer("From what I found: the boAt."))
     await core.run_agent(session.id, "I always buy Sony", llm=llm, small_llm=llm, schedule=scheduled)
-    assert [args[:2] for _, args in scheduled.jobs] == [("I always buy Sony", None)]
+    assert [(func, args[:2]) for func, args in scheduled.jobs] == [
+        (core._extract_memories_safe, ("I always buy Sony", "Hi! What are you shopping for?"))
+    ]
 
 
 async def test_nothing_is_learned_without_a_scheduler(session: Session) -> None:

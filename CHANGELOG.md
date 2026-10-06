@@ -5,6 +5,20 @@ Notable changes to ShopSense. The format follows [Keep a Changelog](https://keep
 ## [Unreleased]
 
 ### Added
+- **All your chats in the sidebar.** See ADR 0009.
+  - Every past chat, most recently active first, with a title and a relative time.
+  - Titles start as the first message; the small model then writes a short title once, which never replaces one you typed.
+  - Open a chat to continue it; search, rename, or delete it (with a confirmation).
+  - New endpoints: `GET /sessions`, `PATCH /sessions/{id}` and `DELETE /sessions/{id}`.
+- **Settings shows memory as markdown files:**
+  - `user.md` ("About me": name, what to call you, pronouns, city, notes; only you write it, and the agent reads it).
+  - `memory.md` (learned facts under headings).
+  - `preferences.md`.
+  - One `YYYY-MM-DD.md` per day of chats.
+  - Each has an "Updated …" time, is editable as text (saving applies the edit), and can be cleared or reset after a confirmation. This replaces the "What I remember" dialog.
+  - New endpoints: `GET`, `PUT` and `DELETE /memory/files/{name}`.
+- **`TIMEZONE` setting** (default `Asia/Kolkata`) for every date shown to you or the agent. The agent is now told today's date.
+
 - **Long-term memory across chats.** See ADR 0008.
   - After each answer, the small model learns lasting facts from what the user said: brands avoided, sizes, usual spend, how they use things. It runs in the background, so the answer never waits.
     - One-off requests aren't stored.
@@ -40,6 +54,10 @@ Notable changes to ShopSense. The format follows [Keep a Changelog](https://keep
 - **Tests ignore the model settings in `.env`** (`LLM_MODEL`, `LLM_BASE_URL`, `LLM_API_KEY`, ...), so a local provider switch can't change test results.
 
 ### Fixed
+- **Past-chat summaries had the wrong dates.**
+  - **Dated by the wrong event:** they were dated and ordered by when the summary was made, so a chat summarized days later looked recent. They now follow when the chat happened.
+  - **The wrong calendar day:** dates came from UTC, so a chat between midnight and 5:30 AM in India showed under the previous day. They now use your time zone.
+- **`tzdata` is now a declared dependency.** Windows has no time zone database of its own.
 - **The agent stays a shopping assistant and calls tools only when needed.** Before this, a rule to always search first made it search the web for "hey", the weather, jokes, and even "a gun without a license"; it also read "how should I invest 10k" as a shopping budget. A new scope section in the system prompt covers small talk, off-topic requests, personal and upsetting messages (kind, no sales pitch, a pointer to help when someone seems at risk), illegal items, things it can't do (orders, tracking), and attempts to change its role. `evals/scope.py` (28 edge cases): 10/28 before the change, 82/84 across three runs after it.
 
 ### Removed
@@ -49,8 +67,8 @@ Notable changes to ShopSense. The format follows [Keep a Changelog](https://keep
 
 ### Added
 - `set_budget` tool: "under 5k" or "my budget is 3000" sets the session's budget, which the system prompt enforces and the sidebar shows. The session budget was dead code until now (SR-13). A web page can't set it: changes pass the request check.
-- Langfuse traces carry the model, provider and API as tags (visible and filterable in the trace list), the app version, and metadata (models, reasoning effort, turn limits, request id) on the trace and every observation in it, as Airtap's traces show them. `/health` reports the version.
-- README with the architecture, setup from clone to running, screenshots and an example conversation, the tech stack and why, the Airtap-inspired patterns, how to add a tool, and how to swap LLM providers.
+- Langfuse traces carry the model, provider and API as tags (visible and filterable in the trace list), the app version, and metadata (models, reasoning effort, turn limits, request id) on the trace and every observation in it. `/health` reports the version.
+- README with the architecture, setup from clone to running, screenshots and an example conversation, the tech stack and why, the design patterns, how to add a tool, and how to swap LLM providers.
 - `AGENTS.md`: conventions, module layering and workflow for contributors and AI coding agents.
 - Architecture decision records in `docs/adr/`.
 - Module layering enforced by import-linter, in the commit hooks and in CI; only `app.llm` may import a provider SDK.
@@ -122,7 +140,7 @@ Notable changes to ShopSense. The format follows [Keep a Changelog](https://keep
 - **SQLite storage** (aiosqlite, WAL) for sessions, messages, the cart and preferences.
 - **The ReAct agent,** with a step limit that answers from research, text-only history replay, and follow-up suggestions.
 - **Langfuse tracing:**
-  - one trace per turn and one generation per LLM attempt, opened before the call and completed after (adapted from Airtap)
+  - one trace per turn and one generation per LLM attempt, opened before the call and completed after
   - typed tool observations
   - PII and key masking
 - **FastAPI:** session, chat, cart and history endpoints; one error format; a Langfuse auth check at startup.

@@ -133,4 +133,6 @@ async def health() -> dict[str, Any]:
         "llm": f"{settings.llm_provider}/{settings.llm_model}",
         "llm_small": f"{settings.llm_provider}/{settings.llm_small_model}",
         "langfuse_url": getattr(app.state, "langfuse_project_url", None) or settings.langfuse_base_url,
+        # The UI shows times in the same zone the server dates chats and memories in.
+        "timezone": settings.timezone,
     }

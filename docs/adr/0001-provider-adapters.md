@@ -26,4 +26,4 @@ The project started on Groq, whose chosen model was then shut down. It moved to 
 - **Tests inject a scripted fake LLM,** with no patching.
 - **Enforced:** import-linter ensures that only `app.llm` imports the OpenAI SDK.
 - **The cost:** every provider must speak something close to Chat Completions. A provider with a truly different API needs a full adapter, including its own error mapping.
-- **Switching providers mid-turn isn't supported.** `_provider_items` are specific to one provider. Airtap handles this by tagging items with the model that produced them; ShopSense doesn't need it yet.
+- **Switching providers mid-turn isn't supported.** `_provider_items` are specific to one provider. Supporting it would mean tagging each item with the model that produced it; ShopSense doesn't need that yet.

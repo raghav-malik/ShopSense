@@ -48,7 +48,7 @@ async def execute_tool(name: str, arguments: str, session_id: str) -> str:
     """
     Execute a tool by name with JSON arguments.
 
-    Validation flow (mirrors Airtap's OmniToolUseValidationError pattern):
+    Validation flow (every failure goes back to the model as a structured error):
     1. Check tool exists → structured error listing available tools
     2. Parse JSON → structured error on malformed JSON
     3. Validate against Pydantic model → structured error with field-level

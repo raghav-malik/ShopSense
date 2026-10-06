@@ -4,13 +4,18 @@ Run:  streamlit run frontend/app.py   (backend: uvicorn app.main:app --port 8000
 """
 
 import contextlib
-import json
 import os
+import sys
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 import httpx
 import streamlit as st
+
+# `streamlit run frontend/app.py` puts only frontend/ on the path; the UI still never imports `app`.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from frontend import timefmt
 
 API_BASE = os.getenv("SHOPSENSE_API_URL", "http://localhost:8000")
 # An agent turn is several LLM calls plus web searches (~20-45s measured, up to
@@ -102,14 +107,42 @@ def get_history(session_id: str) -> JSONObject:
     return _call("GET", f"/sessions/{session_id}/history")
 
 
-def get_memory() -> JSONObject:
-    """Everything remembered about the user: preferences, learned facts, past-chat summaries."""
-    return _call("GET", "/memory")
+def list_chats(query: str = "", limit: int = 30) -> JSONObject:
+    """The user's chats, most recently active first ({"items", "total"})."""
+    return _call("GET", "/sessions", params={"q": query, "limit": limit})
 
 
-def forget(path: str) -> None:
-    """Delete one remembered item (or, for "/memory", everything)."""
-    _call("DELETE", path)
+def rename_chat(chat_id: str, title: str) -> None:
+    """Give a chat a new title."""
+    _call("PATCH", f"/sessions/{chat_id}", json={"title": title})
+
+
+def delete_chat(chat_id: str) -> None:
+    """Remove a chat from the list."""
+    _call("DELETE", f"/sessions/{chat_id}")
+
+
+def load_messages(chat_id: str) -> list[JSONObject]:
+    """A chat's user and assistant messages, to show it again."""
+    history = get_history(chat_id)
+    return [
+        {"role": m["role"], "content": m["content"]} for m in history["messages"] if m["role"] in ("user", "assistant")
+    ]
+
+
+def get_memory_files() -> JSONObject:
+    """Every memory file ({"timezone", "files"}): user.md, memory.md, preferences.md, then the day files."""
+    return _call("GET", "/memory/files")
+
+
+def save_memory_file(name: str, content: str) -> None:
+    """Save an edited memory file."""
+    _call("PUT", f"/memory/files/{quote(name, safe='')}", json={"content": content})
+
+
+def clear_memory_file(name: str) -> None:
+    """Clear a memory file (user.md goes back to its template)."""
+    _call("DELETE", f"/memory/files/{quote(name, safe='')}")
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -261,88 +294,247 @@ def render_message(message: JSONObject, index: int) -> None:
             render_assistant_extras(message, index)
 
 
-# ---- Memory ----
+# ---- Sidebar: past chats ----
+
+CHAT_PAGE = 30
 
 
-def _as_text(value: object) -> str:
-    """A preference value as plain text: lists joined, anything else as JSON."""
-    if isinstance(value, list):
-        return ", ".join(str(v) for v in value)
-    return value if isinstance(value, str) else json.dumps(value)
+def _timezone() -> str:
+    return (backend_info or {}).get("timezone") or timefmt.DEFAULT_TIMEZONE
 
 
-def _forget(path: str) -> None:
-    """Button callback: delete a remembered item before the rerun, which then shows fresh data."""
+def open_chat(chat_id: str) -> None:
+    """Button callback: reopen a past chat where it left off."""
+    if chat_id == st.session_state.session_id:
+        return
     try:
-        forget(path)
+        start_session(chat_id, load_messages(chat_id))
     except ApiError as e:
-        st.session_state.memory_error = str(e)
-    st.session_state.confirm_forget_all = False
+        st.session_state.sidebar_error = str(e)
 
 
-def _set_confirm_forget_all(value: bool) -> None:
-    st.session_state.confirm_forget_all = value
-
-
-def _memory_row(text: str, path: str, key: str) -> None:
-    """One remembered item with a button to forget it."""
-    text_column, button_column = st.columns([12, 1], vertical_alignment="center")
-    text_column.markdown(text)
-    button_column.button("🗑", key=key, help="Forget this", on_click=_forget, args=(path,))
-
-
-def _close_memory_dialog() -> None:
-    """The dialog was dismissed (X, Esc or a click outside): stop reopening it on reruns."""
-    st.session_state.show_memory = False
-    st.session_state.confirm_forget_all = False
-
-
-# Opened through session state rather than straight from the button, so it stays
-# open across reruns until it's dismissed. Its buttons act in on_click callbacks,
-# which run before the rerun: the dialog then always shows the current data,
-# whether Streamlit reruns just the dialog or the whole script.
-@st.dialog("What I remember", width="large", on_dismiss=_close_memory_dialog)
-def memory_dialog() -> None:
-    """Everything that goes into every new chat, with a way to forget each item or all of it."""
-    if error := st.session_state.pop("memory_error", None):
-        st.error(error)
+def new_chat() -> None:
+    """Button callback: summarize the current chat for memory, then start a new one."""
+    if not st.session_state.messages:
+        return  # already a new chat
+    summarize_session(st.session_state.session_id)
     try:
-        memory = get_memory()
+        start_session(create_session())
+    except ApiError as e:
+        st.session_state.sidebar_error = str(e)
+
+
+def rename_chat_callback(chat_id: str) -> None:
+    """Button callback: save the title typed in the chat's ⋮ menu."""
+    title = st.session_state.get(f"rename_{chat_id}", "").strip()
+    if not title:
+        return
+    try:
+        rename_chat(chat_id, title)
+    except ApiError as e:
+        st.session_state.sidebar_error = str(e)
+
+
+def ask_delete_chat(chat_id: str, title: str) -> None:
+    """Button callback: open the delete confirmation for a chat."""
+    st.session_state.delete_chat = {"id": chat_id, "title": title}
+
+
+def _close_delete_dialog() -> None:
+    st.session_state.pop("delete_chat", None)
+
+
+def _confirm_delete(chat_id: str) -> None:
+    try:
+        delete_chat(chat_id)
+    except ApiError as e:
+        st.session_state.sidebar_error = str(e)
+    st.session_state.pop("delete_chat", None)
+    if chat_id == st.session_state.session_id:
+        st.session_state.messages = []
+        try:
+            start_session(create_session())
+        except ApiError as e:
+            st.session_state.sidebar_error = str(e)
+
+
+@st.dialog("Delete chat?", on_dismiss=_close_delete_dialog)
+def delete_chat_dialog() -> None:
+    """Confirm before a chat is deleted."""
+    target = st.session_state.get("delete_chat") or {}
+    st.write(f"Delete **{target.get('title', 'this chat')}** from your chats?")
+    st.caption("It's removed from your chats. What I learned from it stays in Settings, under Memory.")
+    cancel, confirm = st.columns(2)
+    cancel.button("Cancel", width="stretch", on_click=_close_delete_dialog)
+    confirm.button("Delete", type="primary", width="stretch", on_click=_confirm_delete, args=(target.get("id"),))
+
+
+def render_chat_list() -> None:
+    """Search, then every past chat, most recently active first."""
+    query = st.text_input("Search chats", placeholder="🔎 Search chats", label_visibility="collapsed")
+    limit = st.session_state.get("chat_limit", CHAT_PAGE)
+    try:
+        page = list_chats(query, limit)
+    except ApiError as e:
+        st.caption(f"Chats unavailable: {e}")
+        return
+    st.caption("Recent" if not query else f"{page['total']} matching")
+    if not page["items"]:
+        st.caption("No chats yet." if not query else "No chats match.")
+    tz = _timezone()
+    for chat in page["items"]:
+        current = chat["id"] == st.session_state.session_id
+        label = f"{_short(chat['title'], 34)}  \n:gray[{timefmt.relative_time(chat['updated_at'], tz)}]"
+        title_column, menu_column = st.columns([7, 1], vertical_alignment="center")
+        title_column.button(
+            label,
+            key=f"chat_{chat['id']}",
+            type="primary" if current else "tertiary",
+            width="stretch",
+            help=chat["title"],
+            on_click=open_chat,
+            args=(chat["id"],),
+        )
+        with menu_column.popover("⋮", help="Rename or delete"):
+            st.text_input("Rename", value=chat["title"], key=f"rename_{chat['id']}", max_chars=100)
+            st.button("Save name", key=f"save_name_{chat['id']}", on_click=rename_chat_callback, args=(chat["id"],))
+            st.button(
+                "🗑 Delete chat",
+                key=f"delete_{chat['id']}",
+                on_click=ask_delete_chat,
+                args=(chat["id"], chat["title"]),
+            )
+    if page["total"] > len(page["items"]) and st.button(f"Show more ({page['total'] - len(page['items'])})"):
+        st.session_state.chat_limit = limit + CHAT_PAGE
+        st.rerun()
+
+
+# ---- Settings: You and Memory ----
+
+_FILE_HELP = {
+    "user.md": "About you, in your own words. I read it in every chat and never change it myself.",
+    "memory.md": (
+        'What I\'ve learned about you, one fact per line starting with "- ", under a heading '
+        "(Brands you like, Brands you avoid, Budget, Stores, Sizes, Interests, Shopping style, Product feedback, "
+        'Other). Delete a line to make me forget it, or add your own. "(inferred)" marks things you didn\'t say '
+        "outright."
+    ),
+    "preferences.md": 'Preferences you asked me to save, one "- key: value" line each.',
+    "short_term": (
+        "The summaries of that day's chats. Edit a summary to correct it, or delete a chat's section "
+        "(from its ## heading) to make me forget it. Keep each <!-- chat … --> line as it is."
+    ),
+}
+
+
+def _close_settings() -> None:
+    st.session_state.show_settings = False
+    st.session_state.pop("confirm_clear", None)
+
+
+def _save_file_callback(name: str, key: str, original: str) -> None:
+    if st.session_state[key] == original:
+        st.session_state.settings_notice = ("info", f"No changes to {name}.")
+        return
+    try:
+        save_memory_file(name, st.session_state[key])
+        st.session_state.settings_notice = ("success", f"Saved {name}.")
+    except ApiError as e:
+        st.session_state.settings_notice = ("error", str(e))
+
+
+def _clear_file_callback(name: str) -> None:
+    try:
+        clear_memory_file(name)
+        st.session_state.settings_notice = ("success", f"Cleared {name}." if name != "user.md" else "Reset user.md.")
+    except ApiError as e:
+        st.session_state.settings_notice = ("error", str(e))
+    st.session_state.pop("confirm_clear", None)
+
+
+def _set_confirm_clear(name: str | None) -> None:
+    st.session_state.confirm_clear = name
+
+
+def file_editor(file: JSONObject, tz: str, clear_label: str, confirm: tuple[str, str]) -> None:
+    """One memory file: its name and "Updated …", a markdown editor, Save, and Clear behind a confirmation."""
+    name = file["name"]
+    help_text = _FILE_HELP.get(name) or _FILE_HELP["short_term"]
+    st.markdown(f"**{name}** &nbsp; :gray[{timefmt.updated_label(file['updated_at'], tz)}]")
+    st.caption(help_text)
+    # Keyed by the file's version, so the editor shows the saved text after a save or a change elsewhere.
+    key = f"edit_{name}_{file['updated_at']}"
+    st.text_area(name, value=file["content"], height=320, key=key, label_visibility="collapsed")
+    if st.session_state.get("confirm_clear") == name:
+        title, body = confirm
+        st.warning(f"**{title}** {body}")
+        cancel, yes = st.columns(2)
+        cancel.button("Cancel", key=f"cancel_clear_{name}", width="stretch", on_click=_set_confirm_clear, args=(None,))
+        yes.button(
+            clear_label,
+            key=f"yes_clear_{name}",
+            type="primary",
+            width="stretch",
+            on_click=_clear_file_callback,
+            args=(name,),
+        )
+        return
+    left, right = st.columns(2)
+    left.button(clear_label, key=f"clear_{name}", width="stretch", on_click=_set_confirm_clear, args=(name,))
+    # Always enabled: Streamlit registers an edit only when the box loses focus, so a
+    # Save that's disabled until then would swallow the first click.
+    right.button(
+        "Save",
+        key=f"save_{name}",
+        type="primary",
+        width="stretch",
+        on_click=_save_file_callback,
+        args=(name, key, file["content"]),
+    )
+
+
+# Opened through session state, so it stays open across reruns until dismissed;
+# its buttons act in on_click callbacks, which run before the rerun.
+@st.dialog("Settings", width="large", on_dismiss=_close_settings)
+def settings_dialog() -> None:
+    """Settings: "You" (user.md) and "Memory" (long term, preferences, short term)."""
+    if notice := st.session_state.pop("settings_notice", None):
+        {"success": st.success, "info": st.info}.get(notice[0], st.error)(notice[1])
+    try:
+        memory = get_memory_files()
     except ApiError as e:
         st.error(str(e))
         return
-    preferences, facts, episodes = memory["preferences"], memory["memories"], memory["episodes"]
-    if not (preferences or facts or episodes):
-        st.info("Nothing yet. As we chat, I'll remember your preferences and past shopping here.")
-        return
-    st.caption("I use all of this in every new chat. Delete anything you don't want me to use.")
+    tz = memory["timezone"]
+    files = {f["name"]: f for f in memory["files"]}
+    days = [f for f in memory["files"] if f["kind"] == "short_term"]
 
-    if preferences:
-        st.subheader("Your preferences")
-        for name, value in preferences.items():
-            label = f"**{name.replace('_', ' ').capitalize()}**: {_as_text(value)}"
-            _memory_row(label, f"/memory/preferences/{quote(name, safe='')}", f"forget_preference_{name}")
-    if facts:
-        st.subheader("What I've learned about you")
-        for fact in facts:
-            inferred = " _(inferred)_" if fact["confidence"] < 0.9 else ""
-            label = f"{fact['content']}{inferred}  \n:gray[{fact['category'].replace('_', ' ')}]"
-            _memory_row(label, f"/memory/memories/{fact['id']}", f"forget_memory_{fact['id']}")
-    if episodes:
-        st.subheader("Past chats")
-        for episode in episodes:
-            label = f":gray[{episode['created_at'][:10]}] {episode['summary']}"
-            _memory_row(label, f"/memory/episodes/{episode['id']}", f"forget_episode_{episode['id']}")
-
-    st.divider()
-    # A dialog can't open another dialog, so "clear all" confirms in place.
-    if st.session_state.get("confirm_forget_all"):
-        st.warning("Clear all memory? This change is irreversible. Your chats stay.")
-        cancel, confirm = st.columns(2)
-        cancel.button("Cancel", width="stretch", on_click=_set_confirm_forget_all, args=(False,))
-        confirm.button("Yes, clear everything", type="primary", width="stretch", on_click=_forget, args=("/memory",))
-    else:
-        st.button("Clear all memory", on_click=_set_confirm_forget_all, args=(True,))
+    you, memory_tab = st.tabs(["You", "Memory"])
+    with you:
+        file_editor(files["user.md"], tz, "Reset", ("Start user.md over?", "What you wrote here will be removed."))
+    with memory_tab:
+        long_term, preferences, short_term = st.tabs(["Long term", "Preferences", "Short term"])
+        with long_term:
+            file_editor(
+                files["memory.md"], tz, "Clear memory", ("Forget everything in memory.md?", "This can't be undone.")
+            )
+        with preferences:
+            file_editor(
+                files["preferences.md"],
+                tz,
+                "Clear preferences",
+                ("Forget all saved preferences?", "This can't be undone."),
+            )
+        with short_term:
+            if not days:
+                st.info("No chat summaries yet. Each chat is summarized when you start a new one.")
+            else:
+                labels = {f["name"]: timefmt.day_label(f["day"], tz) for f in days}
+                picked = st.selectbox("Day", list(labels), format_func=labels.__getitem__, key="short_term_day")
+                file_editor(
+                    files[picked], tz, "Clear this day", ("Clear this day?", "I'll forget these chat summaries.")
+                )
+    st.caption(f"Times are in {tz}. Memory files are saved in the ShopSense database on this computer.")
 
 
 # ---- Sidebar ----
@@ -351,50 +543,41 @@ backend_info = get_backend_info()
 
 with st.sidebar:
     st.title("🛍️ ShopSense")
-    st.caption(f"Session: `{session_id[:8]}...`")
+    st.button(":material/add: New chat", type="primary", width="stretch", on_click=new_chat)
+    if error := st.session_state.pop("sidebar_error", None):
+        st.error(error)
 
-    if st.button("New Chat"):
-        # Summarize first, so the next chat can remember this one.
-        if st.session_state.messages:
-            with st.spinner("Saving a summary of this chat..."):
-                summarize_session(session_id)
-        try:
-            start_session(create_session())
-            st.rerun()
-        except ApiError as e:
-            st.error(str(e))
-
-    if st.button("🧠 What I remember"):
-        st.session_state.show_memory = True
+    render_chat_list()
 
     st.divider()
-
     # Cart display
     try:
         cart = get_cart(session_id)
-        st.subheader(f"🛒 Cart ({len(cart['items'])} items)")
-        if cart["items"]:
-            for item in cart["items"]:
-                price = f"₹{item['price']:,.0f}" if item.get("price") is not None else "price unknown"
-                st.write(f"• [{item['product_name']}]({item['url']}) — {price}")
-            st.write(f"**Total: ₹{cart['total']:,.0f}**")
-        else:
-            st.write("Empty")
-        if cart.get("budget"):
-            st.caption(f"Budget for this session: ₹{cart['budget']:,.0f}")
+        with st.expander(f"🛒 Cart ({len(cart['items'])} items)", expanded=bool(cart["items"])):
+            if cart["items"]:
+                for item in cart["items"]:
+                    price = f"₹{item['price']:,.0f}" if item.get("price") is not None else "price unknown"
+                    st.write(f"• [{item['product_name']}]({item['url']}) — {price}")
+                st.write(f"**Total: ₹{cart['total']:,.0f}**")
+            else:
+                st.write("Empty")
+            if cart.get("budget"):
+                st.caption(f"Budget for this chat: ₹{cart['budget']:,.0f}")
     except ApiError:
         st.write("Cart unavailable")
 
-    st.divider()
+    if st.button("⚙️ Settings", width="stretch"):
+        st.session_state.show_settings = True
     if backend_info:
-        st.caption(f"Powered by {backend_info['llm']}")
-        st.caption(f"[Langfuse Dashboard]({backend_info['langfuse_url']})")
+        st.caption(f"Powered by {backend_info['llm']} · [Langfuse]({backend_info['langfuse_url']})")
     else:
         st.caption("Backend info unavailable")
 
 
-if st.session_state.get("show_memory"):
-    memory_dialog()
+if st.session_state.get("show_settings"):
+    settings_dialog()
+elif st.session_state.get("delete_chat"):
+    delete_chat_dialog()
 
 
 # ---- Chat ----
@@ -418,7 +601,7 @@ if st.session_state.pop("fetch_suggestions", False) and not prompt:
     with st.spinner("Thinking of follow-ups..."):
         st.session_state.suggestions = get_suggestions(session_id)
 
-# Follow-on suggestion chips (Airtap pattern): clicking one sends it as the next message.
+# Follow-up suggestion chips: clicking one sends it as the next message.
 if st.session_state.suggestions and not prompt:
     columns = st.columns(len(st.session_state.suggestions))
     for i, suggestion in enumerate(st.session_state.suggestions):

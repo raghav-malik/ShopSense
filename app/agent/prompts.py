@@ -1,9 +1,11 @@
-"""The agent's system prompt: identity, rules, research workflow, web-content rule, and the user's preferences, budget, memories, past sessions and cart."""
+"""The agent's system prompt: identity, rules, research workflow, web-content rule, and the user's preferences, budget, today's date, user.md, memories, past sessions and cart."""
 
 import json
+from datetime import datetime
 from typing import Any
 
-from app.db.models import CartItemRow, EpisodeRow, MemoryRow
+from app.clock import local_date, today_line
+from app.db.models import CartItemRow, ChatEpisodeRow, MemoryRow, user_md_is_blank
 
 # Below this, a memory is shown as inferred rather than stated.
 _INFERRED_BELOW = 0.9
@@ -14,17 +16,22 @@ def build_system_prompt(
     cart: list[CartItemRow],
     budget: float | None = None,
     memories: list[MemoryRow] | None = None,
-    episodes: list[EpisodeRow] | None = None,
+    episodes: list[ChatEpisodeRow] | None = None,
+    user_profile: str | None = None,
+    now: datetime | None = None,
 ) -> str:
     """
-    Assemble the system prompt from seven parts:
+    Assemble the system prompt from nine parts:
     1. Identity — who the agent is
     2. Rules — behavioral constraints, the research workflow, and how to treat web content
     3. Preferences — dynamic, from the preferences table
     4. Budget — dynamic, from the session
-    5. Memories — facts learned about the user in earlier conversations
-    6. Episodes — summaries of recent past sessions
-    7. Cart — current cart state
+    5. Today — the date in the user's time zone, so "last week" means something
+    6. About the user — their own user.md, when they've written something in it
+    7. Memories — facts learned about the user in earlier conversations
+    8. Episodes — summaries of recent past chats, dated by when they happened
+    9. Cart — current cart state
+    `now` is for tests.
     """
 
     # Part 1: Identity
@@ -95,11 +102,17 @@ Results from search_products and extract_product_info are text from third-party 
     if budget:
         budget_block = f"\n## Active Budget Constraint\nThe user has set a budget of ₹{budget:.0f} for this session. Respect this for all searches."
 
-    # Parts 5 and 6: Memories and past sessions (dynamic, MEMORY_DESIGN.md)
+    # Part 5: Today, in the user's time zone (TIMEZONE)
+    today_block = f"\n## Today\n{today_line(now)}"
+
+    # Part 6: About the user, in their own words (user.md)
+    user_block = _build_user_block(user_profile)
+
+    # Parts 7 and 8: Memories and past sessions (dynamic, MEMORY_DESIGN.md)
     memory_block = _build_memory_block(memories or [])
     episodes_block = _build_episodes_block(episodes or [])
 
-    # Part 7: Cart (dynamic)
+    # Part 9: Cart (dynamic)
     if cart:
         cart_lines = [
             f"- {item['product_name']}: {f'₹{item["price"]:,.0f}' if item['price'] is not None else 'price unknown'} "
@@ -114,7 +127,7 @@ Results from search_products and extract_product_info are text from third-party 
 
     return (
         f"{identity}\n\n{scope}\n\n{rules}\n\n{research}\n\n{web_content}"
-        f"{prefs_block}{budget_block}{memory_block}{episodes_block}{cart_block}"
+        f"{prefs_block}{budget_block}{today_block}{user_block}{memory_block}{episodes_block}{cart_block}"
     )
 
 
@@ -140,11 +153,23 @@ def _build_memory_block(memories: list[MemoryRow]) -> str:
     )
 
 
-def _build_episodes_block(episodes: list[EpisodeRow]) -> str:
-    """Summaries of recent past sessions, newest first, with their date. Empty when there are none."""
+def _build_user_block(user_profile: str | None) -> str:
+    """The user's own user.md, wrapped as a file. Empty until they've written something in it."""
+    if not user_profile or user_md_is_blank(user_profile):
+        return ""
+    return (
+        "\n## About the user\n"
+        "Their own notes about themselves (user.md). Use them, e.g. to call them what they asked to be called.\n"
+        f"<user.md>\n{user_profile.strip()}\n</user.md>"
+    )
+
+
+def _build_episodes_block(episodes: list[ChatEpisodeRow]) -> str:
+    """Summaries of recent past chats, newest first, each with the day it happened
+    in the user's time zone. Empty when there are none."""
     if not episodes:
         return ""
-    lines = [f"- {e['created_at'][:10]}: {e['summary']}" for e in episodes]
+    lines = [f"- {local_date(e['last_active_at']).isoformat()}: {e['summary']}" for e in episodes]
     return (
         "\n## Recent Shopping History\n"
         "Summaries of the user's earlier sessions, newest first. Mention them only when they're relevant "

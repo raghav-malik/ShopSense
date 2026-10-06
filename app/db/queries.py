@@ -1,19 +1,23 @@
-"""Every database read and write: sessions, messages, cart, preferences, memories and episodes."""
+"""Every database read and write: sessions, messages, cart, preferences, memories, episodes and user.md."""
 
 import json
 from typing import Any, cast
 
 from app.db.database import get_db
 from app.db.models import (
+    USER_MD_TEMPLATE,
     CartItem,
     CartItemRow,
+    ChatEpisodeRow,
+    ChatListRow,
     Episode,
-    EpisodeRow,
     Memory,
     MemoryRow,
     Message,
     MessageRow,
     Session,
+    TitleSource,
+    UserProfileRow,
     new_id,
     now_iso,
 )
@@ -34,9 +38,9 @@ async def create_session(session_id: str | None = None) -> Session:
 
 
 async def get_session(session_id: str) -> Session | None:
-    """The session, or None if it doesn't exist."""
+    """The session, or None if it doesn't exist or was deleted."""
     db = await get_db()
-    rows = list(await db.execute_fetchall("SELECT * FROM sessions WHERE id = ?", (session_id,)))
+    rows = list(await db.execute_fetchall("SELECT * FROM sessions WHERE id = ? AND deleted_at IS NULL", (session_id,)))
     if not rows:
         return None
     r = rows[0]
@@ -46,7 +50,62 @@ async def get_session(session_id: str) -> Session | None:
         updated_at=r["updated_at"],
         budget=r["budget"],
         context_summary=r["context_summary"],
+        title=r["title"],
+        title_source=r["title_source"],
     )
+
+
+async def set_session_title(
+    session_id: str, title: str, source: TitleSource, *, only_if: TitleSource | None = None
+) -> bool:
+    """Set the chat's title. With `only_if`, only while the title still has that
+    source, so a generated title never overwrites one the user typed meanwhile.
+
+    Doesn't touch updated_at: a title isn't activity, and updated_at orders the
+    chat list and decides when a chat needs a new summary.
+    """
+    db = await get_db()
+    query = "UPDATE sessions SET title = ?, title_source = ? WHERE id = ? AND deleted_at IS NULL"
+    params: tuple[object, ...] = (title, source, session_id)
+    if only_if is not None:
+        query += " AND title_source = ?"
+        params += (only_if,)
+    cursor = await db.execute(query, params)
+    await db.commit()
+    return cursor.rowcount > 0
+
+
+async def list_chats(limit: int = 50, offset: int = 0, query: str = "") -> tuple[list[ChatListRow], int]:
+    """Chats with at least one message, most recently active first, optionally
+    filtered by title (case-insensitive), and how many match in total. Deleted
+    chats and the empty sessions every new tab starts with aren't chats."""
+    db = await get_db()
+    where = """deleted_at IS NULL
+               AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = sessions.id AND m.role = 'user')"""
+    params: tuple[object, ...] = ()
+    if query.strip():
+        where += " AND lower(coalesce(title, '')) LIKE ? ESCAPE '\\'"
+        escaped = query.strip().lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        params = (f"%{escaped}%",)
+    rows = await db.execute_fetchall(
+        f"SELECT id, title, created_at, updated_at FROM sessions WHERE {where} "  # noqa: S608 - fixed SQL, values bound
+        "ORDER BY updated_at DESC, rowid DESC LIMIT ? OFFSET ?",
+        (*params, limit, offset),
+    )
+    counted = await db.execute_fetchall(f"SELECT COUNT(*) FROM sessions WHERE {where}", params)  # noqa: S608
+    total = int(next(iter(counted))[0])
+    return [cast(ChatListRow, dict(r)) for r in rows], total
+
+
+async def delete_session(session_id: str) -> bool:
+    """Delete a chat from the user's list (a soft delete: its rows stay, so
+    memories learned from it keep their source). False if there was none."""
+    db = await get_db()
+    cursor = await db.execute(
+        "UPDATE sessions SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL", (now_iso(), session_id)
+    )
+    await db.commit()
+    return cursor.rowcount > 0
 
 
 async def update_session_budget(session_id: str, budget: float | None) -> None:
@@ -160,6 +219,13 @@ async def get_all_preferences() -> dict[str, Any]:
     return {r["key"]: json.loads(r["value"]) for r in rows}
 
 
+async def preferences_updated_at() -> str | None:
+    """When a preference was last saved, or None if there are none."""
+    db = await get_db()
+    rows = list(await db.execute_fetchall("SELECT MAX(updated_at) FROM preferences"))
+    return rows[0][0] if rows else None
+
+
 async def delete_preference(key: str) -> bool:
     """Forget a preference; False if there was none with that key."""
     db = await get_db()
@@ -251,6 +317,16 @@ async def delete_memory(memory_id: str) -> bool:
     return cursor.rowcount > 0
 
 
+async def update_memory(memory_id: str, category: str, content: str, confidence: float) -> None:
+    """Rewrite a memory the user edited; refreshes updated_at."""
+    db = await get_db()
+    await db.execute(
+        "UPDATE memories SET category = ?, content = ?, confidence = ?, updated_at = ? WHERE id = ?",
+        (category, content, confidence, now_iso(), memory_id),
+    )
+    await db.commit()
+
+
 async def increment_access(memory_id: str) -> None:
     """Count one retrieval of a memory (for pruning later); doesn't change updated_at."""
     db = await get_db()
@@ -300,6 +376,7 @@ async def get_sessions_to_summarize(exclude_session_id: str, limit: int = 3) -> 
         """SELECT s.id FROM sessions s
            LEFT JOIN episodes e ON e.session_id = s.id
            WHERE s.id != ?
+             AND s.deleted_at IS NULL
              AND (e.id IS NULL OR e.created_at < s.updated_at)
              AND s.id NOT IN (SELECT session_id FROM forgotten_sessions)
              AND (SELECT COUNT(*) FROM messages m
@@ -341,8 +418,50 @@ async def forget_everything() -> None:
     await db.commit()
 
 
-async def get_recent_episodes(limit: int = 5) -> list[EpisodeRow]:
-    """The `limit` most recent session summaries, newest first."""
+async def get_recent_episodes(limit: int = 5) -> list[ChatEpisodeRow]:
+    """The summaries of the `limit` most recently active chats, newest first.
+
+    Ordered and dated by the chat's last activity, not by when the summary was
+    made: a chat from last week summarized today still belongs to last week.
+    """
     db = await get_db()
-    rows = await db.execute_fetchall("SELECT * FROM episodes ORDER BY created_at DESC LIMIT ?", (limit,))
-    return [cast(EpisodeRow, dict(r)) for r in rows]
+    rows = await db.execute_fetchall(
+        """SELECT e.*, s.title AS chat_title, s.updated_at AS last_active_at
+           FROM episodes e JOIN sessions s ON s.id = e.session_id
+           ORDER BY s.updated_at DESC, e.rowid DESC LIMIT ?""",
+        (limit,),
+    )
+    return [cast(ChatEpisodeRow, dict(r)) for r in rows]
+
+
+async def update_episode_summary(episode_id: str, summary: str) -> bool:
+    """Rewrite a chat's summary (the user edited it); False if there's no such episode."""
+    db = await get_db()
+    cursor = await db.execute("UPDATE episodes SET summary = ? WHERE id = ?", (summary, episode_id))
+    await db.commit()
+    return cursor.rowcount > 0
+
+
+# ---- user.md ----
+
+
+async def get_user_profile() -> UserProfileRow:
+    """The user's user.md (created from the template at startup)."""
+    db = await get_db()
+    rows = list(await db.execute_fetchall("SELECT content, created_at, updated_at FROM user_profile WHERE id = 1"))
+    if not rows:  # only if init_db hasn't run, as in some scripts
+        now = now_iso()
+        return {"content": USER_MD_TEMPLATE, "created_at": now, "updated_at": now}
+    return cast(UserProfileRow, dict(rows[0]))
+
+
+async def set_user_profile(content: str) -> None:
+    """Save the user's user.md."""
+    db = await get_db()
+    now = now_iso()
+    await db.execute(
+        """INSERT INTO user_profile (id, content, created_at, updated_at) VALUES (1, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at""",
+        (content, now, now),
+    )
+    await db.commit()
