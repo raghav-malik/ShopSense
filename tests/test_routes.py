@@ -1,7 +1,7 @@
 """API endpoints through FastAPI's TestClient. The agent is mocked where a route
 would call it, so these tests never reach an LLM."""
 
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from typing import Any, Protocol
 
 import pytest
@@ -11,7 +11,8 @@ import app.main as main_module
 import app.routes.chat as chat_routes
 import app.routes.sessions as session_routes
 from app.agent.schemas import AgentResponse
-from app.db.models import Episode
+from app.db import queries
+from app.db.models import Episode, Memory
 from app.llm.errors import LLMRateLimitError, LLMTimeoutError, LLMUnavailableError
 from app.llm.types import JSONObject
 from app.main import app
@@ -308,3 +309,72 @@ def test_unknown_route_uses_error_shape(client: TestClient) -> None:
     response = client.get("/nope")
     assert response.status_code == 404
     assert error_of(response)["code"] == "http_404"
+
+
+# ---- memory ----
+
+
+def run(client: TestClient, func: Callable[..., Awaitable[Any]], *args: Any) -> Any:
+    """Run a query in the app's event loop, where its database connection lives."""
+    assert client.portal is not None
+    return client.portal.call(func, *args)
+
+
+@pytest.fixture
+def remembered(client: TestClient, session_id: str) -> dict[str, str]:
+    """A preference, a learned fact and a past-session summary."""
+    memory = Memory(category="brand_dislike", content="dislikes boAt", confidence=0.8)
+    episode = Episode(session_id=session_id, summary="Looked for earbuds under ₹3,000.", outcome="browsed")
+    run(client, queries.set_preference, "preferred_brands", ["Sony"])
+    run(client, queries.save_memory, memory)
+    run(client, queries.save_episode, episode)
+    return {"memory": memory.id, "episode": episode.id}
+
+
+def test_memory_overview(client: TestClient, session_id: str, remembered: dict[str, str]) -> None:
+    body = client.get("/memory").json()
+    assert body["preferences"] == {"preferred_brands": ["Sony"]}
+    [memory] = body["memories"]
+    assert (memory["id"], memory["category"], memory["content"], memory["confidence"]) == (
+        remembered["memory"],
+        "brand_dislike",
+        "dislikes boAt",
+        0.8,
+    )
+    [episode] = body["episodes"]
+    assert (episode["id"], episode["session_id"], episode["summary"], episode["outcome"]) == (
+        remembered["episode"],
+        session_id,
+        "Looked for earbuds under ₹3,000.",
+        "browsed",
+    )
+
+
+def test_memory_overview_when_empty(client: TestClient) -> None:
+    assert client.get("/memory").json() == {"preferences": {}, "memories": [], "episodes": []}
+
+
+@pytest.mark.parametrize(
+    ("path", "kind", "code"),
+    [
+        ("/memory/memories/{memory}", "memories", "memory_not_found"),
+        ("/memory/episodes/{episode}", "episodes", "episode_not_found"),
+    ],
+)
+def test_forget_one_item(client: TestClient, remembered: dict[str, str], path: str, kind: str, code: str) -> None:
+    url = path.format(**remembered)
+    assert client.delete(url).status_code == 204
+    assert client.get("/memory").json()[kind] == []
+    response = client.delete(url)  # already gone
+    assert response.status_code == 404 and error_of(response)["code"] == code
+
+
+def test_forget_a_preference(client: TestClient, remembered: dict[str, str]) -> None:
+    assert client.delete("/memory/preferences/preferred_brands").status_code == 204
+    assert client.get("/memory").json()["preferences"] == {}
+    assert error_of(client.delete("/memory/preferences/preferred_brands"))["code"] == "preference_not_found"
+
+
+def test_forget_everything(client: TestClient, remembered: dict[str, str]) -> None:
+    assert client.delete("/memory").status_code == 204
+    assert client.get("/memory").json() == {"preferences": {}, "memories": [], "episodes": []}

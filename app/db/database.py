@@ -117,6 +117,13 @@ async def init_db() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_episodes_created
             ON episodes(created_at DESC);
+
+        -- Sessions whose summary the user deleted: never summarized again, or
+        -- the background summarizer would bring the forgotten summary back.
+        CREATE TABLE IF NOT EXISTS forgotten_sessions (
+            session_id      TEXT PRIMARY KEY REFERENCES sessions(id),
+            forgotten_at    TEXT NOT NULL
+        );
     """)
     await db.commit()
 

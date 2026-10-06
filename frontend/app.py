@@ -4,8 +4,10 @@ Run:  streamlit run frontend/app.py   (backend: uvicorn app.main:app --port 8000
 """
 
 import contextlib
+import json
 import os
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 import streamlit as st
@@ -55,6 +57,8 @@ def _call(method: str, path: str, *, timeout: float = 15.0, **kwargs: Any) -> JS
         except (ValueError, KeyError, TypeError) as e:
             raise ApiError(f"API error {response.status_code}", f"http_{response.status_code}") from e
         raise ApiError(message, code, error.get("trace_url"))
+    if not response.content:  # 204 No Content, e.g. after a delete
+        return {}
     body: JSONObject = response.json()
     return body
 
@@ -96,6 +100,16 @@ def summarize_session(session_id: str) -> None:
 def get_history(session_id: str) -> JSONObject:
     """The session's saved messages and details."""
     return _call("GET", f"/sessions/{session_id}/history")
+
+
+def get_memory() -> JSONObject:
+    """Everything remembered about the user: preferences, learned facts, past-chat summaries."""
+    return _call("GET", "/memory")
+
+
+def forget(path: str) -> None:
+    """Delete one remembered item (or, for "/memory", everything)."""
+    _call("DELETE", path)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -247,6 +261,90 @@ def render_message(message: JSONObject, index: int) -> None:
             render_assistant_extras(message, index)
 
 
+# ---- Memory ----
+
+
+def _as_text(value: object) -> str:
+    """A preference value as plain text: lists joined, anything else as JSON."""
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in value)
+    return value if isinstance(value, str) else json.dumps(value)
+
+
+def _forget(path: str) -> None:
+    """Button callback: delete a remembered item before the rerun, which then shows fresh data."""
+    try:
+        forget(path)
+    except ApiError as e:
+        st.session_state.memory_error = str(e)
+    st.session_state.confirm_forget_all = False
+
+
+def _set_confirm_forget_all(value: bool) -> None:
+    st.session_state.confirm_forget_all = value
+
+
+def _memory_row(text: str, path: str, key: str) -> None:
+    """One remembered item with a button to forget it."""
+    text_column, button_column = st.columns([12, 1], vertical_alignment="center")
+    text_column.markdown(text)
+    button_column.button("🗑", key=key, help="Forget this", on_click=_forget, args=(path,))
+
+
+def _close_memory_dialog() -> None:
+    """The dialog was dismissed (X, Esc or a click outside): stop reopening it on reruns."""
+    st.session_state.show_memory = False
+    st.session_state.confirm_forget_all = False
+
+
+# Opened through session state rather than straight from the button, so it stays
+# open across reruns until it's dismissed. Its buttons act in on_click callbacks,
+# which run before the rerun: the dialog then always shows the current data,
+# whether Streamlit reruns just the dialog or the whole script.
+@st.dialog("What I remember", width="large", on_dismiss=_close_memory_dialog)
+def memory_dialog() -> None:
+    """Everything that goes into every new chat, with a way to forget each item or all of it."""
+    if error := st.session_state.pop("memory_error", None):
+        st.error(error)
+    try:
+        memory = get_memory()
+    except ApiError as e:
+        st.error(str(e))
+        return
+    preferences, facts, episodes = memory["preferences"], memory["memories"], memory["episodes"]
+    if not (preferences or facts or episodes):
+        st.info("Nothing yet. As we chat, I'll remember your preferences and past shopping here.")
+        return
+    st.caption("I use all of this in every new chat. Delete anything you don't want me to use.")
+
+    if preferences:
+        st.subheader("Your preferences")
+        for name, value in preferences.items():
+            label = f"**{name.replace('_', ' ').capitalize()}**: {_as_text(value)}"
+            _memory_row(label, f"/memory/preferences/{quote(name, safe='')}", f"forget_preference_{name}")
+    if facts:
+        st.subheader("What I've learned about you")
+        for fact in facts:
+            inferred = " _(inferred)_" if fact["confidence"] < 0.9 else ""
+            label = f"{fact['content']}{inferred}  \n:gray[{fact['category'].replace('_', ' ')}]"
+            _memory_row(label, f"/memory/memories/{fact['id']}", f"forget_memory_{fact['id']}")
+    if episodes:
+        st.subheader("Past chats")
+        for episode in episodes:
+            label = f":gray[{episode['created_at'][:10]}] {episode['summary']}"
+            _memory_row(label, f"/memory/episodes/{episode['id']}", f"forget_episode_{episode['id']}")
+
+    st.divider()
+    # A dialog can't open another dialog, so "clear all" confirms in place.
+    if st.session_state.get("confirm_forget_all"):
+        st.warning("Clear all memory? This change is irreversible. Your chats stay.")
+        cancel, confirm = st.columns(2)
+        cancel.button("Cancel", width="stretch", on_click=_set_confirm_forget_all, args=(False,))
+        confirm.button("Yes, clear everything", type="primary", width="stretch", on_click=_forget, args=("/memory",))
+    else:
+        st.button("Clear all memory", on_click=_set_confirm_forget_all, args=(True,))
+
+
 # ---- Sidebar ----
 
 backend_info = get_backend_info()
@@ -265,6 +363,9 @@ with st.sidebar:
             st.rerun()
         except ApiError as e:
             st.error(str(e))
+
+    if st.button("🧠 What I remember"):
+        st.session_state.show_memory = True
 
     st.divider()
 
@@ -290,6 +391,10 @@ with st.sidebar:
         st.caption(f"[Langfuse Dashboard]({backend_info['langfuse_url']})")
     else:
         st.caption("Backend info unavailable")
+
+
+if st.session_state.get("show_memory"):
+    memory_dialog()
 
 
 # ---- Chat ----

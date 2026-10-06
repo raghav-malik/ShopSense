@@ -208,6 +208,51 @@ async def test_summarizing_pending_sessions_never_raises() -> None:
     assert await summarize_pending_sessions(current.id) == []
 
 
+# ---- forgetting ----
+
+
+async def test_a_forgotten_summary_stays_forgotten() -> None:
+    current = await queries.create_session()
+    earlier = await conversation("phones under 15k", "Here are some.")
+    episode = Episode(session_id=earlier.id, summary="Looked for phones under ₹15,000.")
+    await queries.save_episode(episode)
+
+    assert await queries.delete_episode(episode.id) is True
+    assert await queries.get_recent_episodes() == []
+    # The background summarizer doesn't bring it back.
+    assert await queries.get_sessions_to_summarize(exclude_session_id=current.id) == []
+    assert await queries.delete_episode(episode.id) is False
+
+
+async def test_delete_preference() -> None:
+    await queries.set_preference("preferred_brands", ["Sony"])
+    await queries.set_preference("shoe_size", "M")
+    assert await queries.delete_preference("preferred_brands") is True
+    assert await queries.delete_preference("preferred_brands") is False
+    assert await queries.get_all_preferences() == {"shoe_size": "M"}
+
+
+async def test_forget_everything_keeps_the_chats() -> None:
+    current = await queries.create_session()
+    earlier = await conversation("earbuds", "Here are some.")
+    await queries.set_preference("preferred_brands", ["Sony"])
+    await queries.save_memory(Memory(category="size_info", content="wears size M"))
+    await queries.save_episode(Episode(session_id=earlier.id, summary="Looked for earbuds."))
+    unsummarized = await conversation("laptops", "Here are some.")
+
+    await queries.forget_everything()
+
+    assert await queries.get_all_preferences() == {}
+    assert await queries.get_all_memories() == []
+    assert await queries.get_recent_episodes() == []
+    # No session is summarized again, including one that was never summarized.
+    assert await queries.get_sessions_to_summarize(exclude_session_id=current.id) == []
+    assert unsummarized.id and [m["content"] for m in await queries.get_messages(earlier.id)] == [
+        "earbuds",
+        "Here are some.",
+    ]
+
+
 # ---- extracting facts from a turn ----
 
 

@@ -160,6 +160,14 @@ async def get_all_preferences() -> dict[str, Any]:
     return {r["key"]: json.loads(r["value"]) for r in rows}
 
 
+async def delete_preference(key: str) -> bool:
+    """Forget a preference; False if there was none with that key."""
+    db = await get_db()
+    cursor = await db.execute("DELETE FROM preferences WHERE key = ?", (key,))
+    await db.commit()
+    return cursor.rowcount > 0
+
+
 async def set_preference(key: str, value: object) -> None:
     """Save a preference (any JSON value), replacing an existing one with the same key."""
     db = await get_db()
@@ -293,6 +301,7 @@ async def get_sessions_to_summarize(exclude_session_id: str, limit: int = 3) -> 
            LEFT JOIN episodes e ON e.session_id = s.id
            WHERE s.id != ?
              AND (e.id IS NULL OR e.created_at < s.updated_at)
+             AND s.id NOT IN (SELECT session_id FROM forgotten_sessions)
              AND (SELECT COUNT(*) FROM messages m
                   WHERE m.session_id = s.id AND m.role IN ('user', 'assistant')) >= 2
            ORDER BY s.updated_at DESC
@@ -300,6 +309,36 @@ async def get_sessions_to_summarize(exclude_session_id: str, limit: int = 3) -> 
         (exclude_session_id, limit),
     )
     return [r["id"] for r in rows]
+
+
+async def delete_episode(episode_id: str) -> bool:
+    """Forget a session's summary for good: the session is marked forgotten so
+    it isn't summarized again. False if there was no such episode."""
+    db = await get_db()
+    rows = list(await db.execute_fetchall("SELECT session_id FROM episodes WHERE id = ?", (episode_id,)))
+    if not rows:
+        return False
+    await db.execute(
+        "INSERT OR IGNORE INTO forgotten_sessions (session_id, forgotten_at) VALUES (?, ?)",
+        (rows[0]["session_id"], now_iso()),
+    )
+    await db.execute("DELETE FROM episodes WHERE id = ?", (episode_id,))
+    await db.commit()
+    return True
+
+
+async def forget_everything() -> None:
+    """Delete every preference, memory and session summary, and mark every
+    session forgotten so none is summarized again. Chats themselves stay."""
+    db = await get_db()
+    await db.execute(
+        "INSERT OR IGNORE INTO forgotten_sessions (session_id, forgotten_at) SELECT id, ? FROM sessions",
+        (now_iso(),),
+    )
+    await db.execute("DELETE FROM episodes")
+    await db.execute("DELETE FROM memories")
+    await db.execute("DELETE FROM preferences")
+    await db.commit()
 
 
 async def get_recent_episodes(limit: int = 5) -> list[EpisodeRow]:
