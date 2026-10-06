@@ -54,6 +54,10 @@ Notable changes to ShopSense. The format follows [Keep a Changelog](https://keep
 - **Tests ignore the model settings in `.env`** (`LLM_MODEL`, `LLM_BASE_URL`, `LLM_API_KEY`, ...), so a local provider switch can't change test results.
 
 ### Fixed
+- **Switching chats lost the links and suggestions under answers.**
+  - **What was lost:** product cards, the "Prices checked" panel, the trace details and the follow-up suggestions were kept only in the browser session, so they disappeared when switching chats or refreshing.
+  - **The fix:** they're now saved with each answer (`messages.details`) and come back with `/history`. The follow-up suggestions are saved with the latest answer when they're made.
+  - **Answers saved before this fix** get their product links back from that turn's search results; their price checks and trace details weren't kept.
 - **Past-chat summaries had the wrong dates.**
   - **Dated by the wrong event:** they were dated and ordered by when the summary was made, so a chat summarized days later looked recent. They now follow when the chat happened.
   - **The wrong calendar day:** dates came from UTC, so a chat between midnight and 5:30 AM in India showed under the previous day. They now use your time zone.

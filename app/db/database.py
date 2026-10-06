@@ -59,7 +59,8 @@ async def init_db() -> None:
             tool_name       TEXT,
             tool_call_id    TEXT,
             created_at      TEXT NOT NULL,
-            token_count     INTEGER
+            token_count     INTEGER,
+            details         TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_messages_session
@@ -150,6 +151,7 @@ async def init_db() -> None:
 # Columns added after a table first shipped: CREATE TABLE IF NOT EXISTS doesn't
 # add them to an existing database, so they're added here, once.
 _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
+    "messages": [("details", "TEXT")],
     "sessions": [
         ("title", "TEXT"),
         ("title_source", "TEXT CHECK(title_source IN ('placeholder', 'llm', 'user'))"),

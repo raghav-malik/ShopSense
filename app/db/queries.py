@@ -125,8 +125,8 @@ async def save_message(msg: Message) -> None:
     """Store a message and mark the session as updated."""
     db = await get_db()
     await db.execute(
-        """INSERT INTO messages (id, session_id, role, content, tool_name, tool_call_id, created_at, token_count)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        """INSERT INTO messages (id, session_id, role, content, tool_name, tool_call_id, created_at, token_count, details)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             msg.id,
             msg.session_id,
@@ -136,6 +136,7 @@ async def save_message(msg: Message) -> None:
             msg.tool_call_id,
             msg.created_at,
             msg.token_count,
+            msg.details,
         ),
     )
     await db.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (msg.created_at, msg.session_id))
@@ -161,6 +162,27 @@ async def get_messages(session_id: str, limit: int = 50) -> list[MessageRow]:
     )
     # .keys() is required: iterating a sqlite3.Row yields its values, not its column names.
     return [cast(MessageRow, {k: r[k] for k in r.keys() if k != "_seq"}) for r in rows]  # noqa: SIM118
+
+
+async def add_to_latest_answer(session_id: str, extra: dict[str, object]) -> bool:
+    """Merge `extra` into the details of the session's latest answer (e.g. its
+    follow-up suggestions, made after it was saved). False if there's no answer.
+    Doesn't count as activity."""
+    db = await get_db()
+    rows = list(
+        await db.execute_fetchall(
+            """SELECT id, details FROM messages WHERE session_id = ? AND role = 'assistant'
+               ORDER BY created_at DESC, rowid DESC LIMIT 1""",
+            (session_id,),
+        )
+    )
+    if not rows:
+        return False
+    details = json.loads(rows[0]["details"] or "{}")
+    details.update(extra)
+    await db.execute("UPDATE messages SET details = ? WHERE id = ?", (json.dumps(details), rows[0]["id"]))
+    await db.commit()
+    return True
 
 
 # ---- Cart ----
