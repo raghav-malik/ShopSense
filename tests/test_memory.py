@@ -8,7 +8,7 @@ from typing import cast
 import pytest
 
 import app.agent.core as core
-from app.agent.memory import extract_memories, summarize_session
+from app.agent.memory import extract_memories, summarize_pending_sessions, summarize_session
 from app.agent.prompts import build_system_prompt
 from app.config import settings
 from app.db import queries
@@ -154,6 +154,58 @@ async def test_recent_episodes_newest_first() -> None:
         s = await queries.create_session()
         await queries.save_episode(Episode(session_id=s.id, summary=day, created_at=day))
     assert [e["summary"] for e in await queries.get_recent_episodes(limit=2)] == ["2026-10-03", "2026-10-02"]
+
+
+# ---- which sessions still need a summary (M3) ----
+
+
+async def conversation(*turns: str) -> Session:
+    """A session where the user and the assistant take turns saying `turns`."""
+    s = await queries.create_session()
+    for i, content in enumerate(turns):
+        role: MessageRole = "user" if i % 2 == 0 else "assistant"
+        await queries.save_message(Message(session_id=s.id, role=role, content=content))
+    return s
+
+
+async def test_sessions_to_summarize() -> None:
+    current = await conversation("earbuds", "Here are some.")
+    unsummarized = await conversation("phones", "Here are some.")
+    too_short = await conversation("hey")
+    summarized = await conversation("laptops", "Here are some.")
+    await queries.save_episode(Episode(session_id=summarized.id, summary="Looked for laptops."))
+    reopened = await conversation("watches", "Here are some.")
+    await queries.save_episode(Episode(session_id=reopened.id, summary="Looked at watches.", created_at="2000-01-01"))
+
+    pending = await queries.get_sessions_to_summarize(exclude_session_id=current.id)
+    # The newest activity first; not the session in use, not one too short, not one already up to date.
+    assert pending == [reopened.id, unsummarized.id]
+    assert too_short.id not in pending and summarized.id not in pending
+    assert await queries.get_sessions_to_summarize(exclude_session_id=current.id, limit=1) == [reopened.id]
+
+
+async def test_pending_sessions_are_summarized() -> None:
+    current = await queries.create_session()
+    earlier = await conversation("wireless earbuds under 3000", "Here are three.")
+    llm = FakeLLM(summary())
+    [episode] = await summarize_pending_sessions(current.id, llm)
+    assert episode.session_id == earlier.id
+    assert [e["session_id"] for e in await queries.get_recent_episodes()] == [earlier.id]
+    # Up to date now: the next new session doesn't summarize it again.
+    assert await summarize_pending_sessions(current.id, FakeLLM()) == []
+
+
+async def test_nothing_pending_needs_no_model() -> None:
+    current = await queries.create_session()
+    # No llm passed and none needed: the safety net would refuse to create one.
+    assert await summarize_pending_sessions(current.id) == []
+
+
+async def test_summarizing_pending_sessions_never_raises() -> None:
+    current = await queries.create_session()
+    await conversation("phones", "Here are some.")
+    # No llm passed, so it asks for the real one, which the test safety net refuses.
+    assert await summarize_pending_sessions(current.id) == []
 
 
 # ---- extracting facts from a turn ----

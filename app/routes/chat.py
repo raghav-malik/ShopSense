@@ -1,6 +1,7 @@
-"""Per-session endpoints: chat, follow-up suggestions, cart and history."""
+"""Per-session endpoints: chat, follow-up suggestions, session summary, cart and history."""
 
 import asyncio
+import json
 import logging
 import math
 
@@ -8,10 +9,12 @@ from fastapi import APIRouter, BackgroundTasks
 from pydantic import BaseModel, Field
 
 from app.agent.core import run_agent
+from app.agent.memory import summarize_session
 from app.agent.schemas import AgentResponse
 from app.agent.suggestions import suggest_follow_ups
 from app.db import queries
-from app.db.models import MessageRow, Session
+from app.db.models import Episode, EpisodeOutcome, MessageRow, Session
+from app.llm.adapter import get_small_llm_adapter
 from app.llm.errors import LLMError, LLMRateLimitError, LLMTimeoutError, LLMUnavailableError
 from app.routes.errors import ErrorResponse, api_error
 from app.tracing.langfuse_setup import get_langfuse
@@ -111,6 +114,43 @@ async def suggestions(session_id: str) -> SuggestionsResponse:
     await _require_session(session_id)
     history = await queries.get_messages(session_id, limit=12)
     return SuggestionsResponse(suggestions=await suggest_follow_ups(session_id, history))
+
+
+class EpisodeResponse(BaseModel):
+    """A session's summary, as stored for future sessions."""
+
+    session_id: str
+    summary: str
+    products_searched: list[str]
+    products_carted: list[str]
+    outcome: EpisodeOutcome | None
+    created_at: str
+
+    @classmethod
+    def from_episode(cls, episode: Episode) -> "EpisodeResponse":
+        """The stored episode, with its JSON-encoded product lists decoded."""
+        return cls(
+            session_id=episode.session_id,
+            summary=episode.summary,
+            products_searched=json.loads(episode.products_searched or "[]"),
+            products_carted=json.loads(episode.products_carted or "[]"),
+            outcome=episode.outcome,
+            created_at=episode.created_at,
+        )
+
+
+@router.post("/summarize")
+async def summarize(session_id: str) -> EpisodeResponse | None:
+    """Summarize the session for future sessions' memory, on the small model.
+
+    Returns the summary, or null when there's nothing to summarize yet (fewer
+    than 2 messages) or the summary couldn't be made: memory is best-effort.
+    Summarizing again replaces the earlier summary. Earlier sessions are also
+    summarized automatically when a new session starts.
+    """
+    await _require_session(session_id)
+    episode = await summarize_session(session_id, get_small_llm_adapter())
+    return EpisodeResponse.from_episode(episode) if episode else None
 
 
 class CartItemOut(BaseModel):

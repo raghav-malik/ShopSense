@@ -282,6 +282,26 @@ async def save_episode(episode: Episode) -> None:
     await db.commit()
 
 
+async def get_sessions_to_summarize(exclude_session_id: str, limit: int = 3) -> list[str]:
+    """Ids of the most recently active sessions that need a summary, newest first:
+    sessions with a conversation (2+ user or assistant messages) and either no
+    episode yet, or one older than their last message (reopened and continued).
+    `exclude_session_id` is the session in use, which isn't finished."""
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        """SELECT s.id FROM sessions s
+           LEFT JOIN episodes e ON e.session_id = s.id
+           WHERE s.id != ?
+             AND (e.id IS NULL OR e.created_at < s.updated_at)
+             AND (SELECT COUNT(*) FROM messages m
+                  WHERE m.session_id = s.id AND m.role IN ('user', 'assistant')) >= 2
+           ORDER BY s.updated_at DESC
+           LIMIT ?""",
+        (exclude_session_id, limit),
+    )
+    return [r["id"] for r in rows]
+
+
 async def get_recent_episodes(limit: int = 5) -> list[EpisodeRow]:
     """The `limit` most recent session summaries, newest first."""
     db = await get_db()

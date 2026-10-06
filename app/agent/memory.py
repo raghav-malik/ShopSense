@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field, TypeAdapter, ValidationError, field_valid
 from app.agent.trace_attributes import trace_attributes
 from app.db import queries
 from app.db.models import Episode, EpisodeOutcome, Memory, MemoryCategory, MemoryRow, MessageRow
-from app.llm.adapter import LLMAdapter
+from app.llm.adapter import LLMAdapter, get_small_llm_adapter
 from app.llm.types import ChatMessage
 from app.tools.untrusted import clean_text
 from app.tracing.langfuse_setup import get_langfuse
@@ -238,6 +238,27 @@ def _refs(known: list[MemoryRow]) -> dict[str, MemoryRow]:
     """Short ids for the known memories ("m1", "m2", ...): easier for a model to
     copy back exactly than a UUID."""
     return {f"m{i}": memory for i, memory in enumerate(known, start=1)}
+
+
+async def summarize_pending_sessions(exclude_session_id: str, llm: LLMAdapter | None = None) -> list[Episode]:
+    """Summarize earlier sessions that have no summary yet (or an outdated one).
+
+    Run in the background when a new session starts. A session usually ends by
+    the tab being closed, not by a button, so waiting for an explicit "end"
+    would leave most sessions unsummarized (MEMORY_IMPLEMENTATION.md, M3). At
+    most 3 per call, one at a time, to go easy on rate-limited plans.
+    Never raises.
+    """
+    try:
+        session_ids = await queries.get_sessions_to_summarize(exclude_session_id)
+        if not session_ids:
+            return []
+        llm = llm or get_small_llm_adapter()
+        episodes = [await summarize_session(session_id, llm) for session_id in session_ids]
+        return [e for e in episodes if e is not None]
+    except Exception:  # memory is best-effort
+        logger.warning("Summarizing earlier sessions failed", exc_info=True)
+        return []
 
 
 def _extraction_messages(

@@ -9,7 +9,9 @@ from fastapi.testclient import TestClient
 
 import app.main as main_module
 import app.routes.chat as chat_routes
+import app.routes.sessions as session_routes
 from app.agent.schemas import AgentResponse
+from app.db.models import Episode
 from app.llm.errors import LLMRateLimitError, LLMTimeoutError, LLMUnavailableError
 from app.llm.types import JSONObject
 from app.main import app
@@ -69,6 +71,71 @@ def test_create_session(client: TestClient) -> None:
 
 def test_sessions_are_unique(client: TestClient) -> None:
     assert client.post("/sessions").json()["session_id"] != client.post("/sessions").json()["session_id"]
+
+
+def test_a_new_session_summarizes_earlier_ones_in_the_background(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started: list[str] = []
+
+    async def summarize_pending(new_session_id: str) -> list[Episode]:
+        started.append(new_session_id)
+        return []
+
+    monkeypatch.setattr(session_routes, "summarize_pending_sessions", summarize_pending)
+    response = client.post("/sessions")
+    assert response.status_code == 201 and started == [response.json()["session_id"]]
+
+
+# ---- session summary ----
+
+
+def test_summarize_returns_the_episode(client: TestClient, session_id: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    small_llm = object()
+    seen: list[tuple[str, object]] = []
+
+    async def summarize(sid: str, llm: object) -> Episode:
+        seen.append((sid, llm))
+        return Episode(
+            session_id=sid,
+            summary="Looked for earbuds under ₹3,000 and carted the boAt Airdopes 141.",
+            products_searched='["wireless earbuds"]',
+            products_carted='["boAt Airdopes 141"]',
+            outcome="carted",
+            created_at="2026-10-06T08:00:00+00:00",
+        )
+
+    monkeypatch.setattr(chat_routes, "get_small_llm_adapter", lambda: small_llm)
+    monkeypatch.setattr(chat_routes, "summarize_session", summarize)
+    response = client.post(f"/sessions/{session_id}/summarize")
+    assert response.status_code == 200
+    assert response.json() == {
+        "session_id": session_id,
+        "summary": "Looked for earbuds under ₹3,000 and carted the boAt Airdopes 141.",
+        "products_searched": ["wireless earbuds"],
+        "products_carted": ["boAt Airdopes 141"],
+        "outcome": "carted",
+        "created_at": "2026-10-06T08:00:00+00:00",
+    }
+    assert seen == [(session_id, small_llm)]  # on the small model
+
+
+def test_summarize_returns_null_when_there_is_nothing_to_summarize(
+    client: TestClient, session_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def too_short(sid: str, llm: object) -> None:
+        return None
+
+    monkeypatch.setattr(chat_routes, "get_small_llm_adapter", lambda: object())
+    monkeypatch.setattr(chat_routes, "summarize_session", too_short)
+    response = client.post(f"/sessions/{session_id}/summarize")
+    assert response.status_code == 200 and response.json() is None
+
+
+def test_summarize_unknown_session(client: TestClient) -> None:
+    response = client.post("/sessions/nonexistent/summarize")
+    assert response.status_code == 404
+    assert error_of(response)["code"] == "session_not_found"
 
 
 # ---- chat ----

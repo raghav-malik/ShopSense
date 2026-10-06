@@ -3,6 +3,7 @@
 Run:  streamlit run frontend/app.py   (backend: uvicorn app.main:app --port 8000)
 """
 
+import contextlib
 import os
 from typing import Any
 
@@ -13,6 +14,9 @@ API_BASE = os.getenv("SHOPSENSE_API_URL", "http://localhost:8000")
 # An agent turn is several LLM calls plus web searches (~20-45s measured, up to
 # 10 steps worst case), so the spec's 60s timeout cut off slow-but-healthy turns.
 CHAT_TIMEOUT = 180.0
+# One small-model call (2-5s on gemma4:31b), but it can queue behind other
+# requests on a rate-limited plan.
+SUMMARIZE_TIMEOUT = 60.0
 MAX_PRODUCT_CARDS = 3
 
 # The backend's JSON bodies. The UI reads them as plain dicts, like the API returns them.
@@ -78,6 +82,15 @@ def get_suggestions(session_id: str) -> list[str]:
     except ApiError:
         return []
     return suggestions
+
+
+def summarize_session(session_id: str) -> None:
+    """Save a summary of the session for future chats' memory; best-effort.
+
+    If it fails, the backend summarizes the session later anyway, when the next
+    new session starts."""
+    with contextlib.suppress(ApiError):
+        _call("POST", f"/sessions/{session_id}/summarize", timeout=SUMMARIZE_TIMEOUT)
 
 
 def get_history(session_id: str) -> JSONObject:
@@ -242,7 +255,11 @@ with st.sidebar:
     st.title("🛍️ ShopSense")
     st.caption(f"Session: `{session_id[:8]}...`")
 
-    if st.button("New Session"):
+    if st.button("New Chat"):
+        # Summarize first, so the next chat can remember this one.
+        if st.session_state.messages:
+            with st.spinner("Saving a summary of this chat..."):
+                summarize_session(session_id)
         try:
             start_session(create_session())
             st.rerun()
