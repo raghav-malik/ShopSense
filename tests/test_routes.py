@@ -124,6 +124,25 @@ def test_chat_returns_agent_response(client: TestClient, session_id: str, monkey
     assert sid == session_id and message == "earbuds" and len(kwargs["langfuse_trace_id"]) == 32
 
 
+def test_chat_runs_scheduled_work_after_the_response(
+    client: TestClient, session_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Memory extraction goes through BackgroundTasks: it runs after the answer is sent."""
+    ran: list[str] = []
+
+    async def learn(message: str) -> None:
+        ran.append(message)
+
+    async def fake_run_agent(sid: str, message: str, **kwargs: Any) -> AgentResponse:
+        kwargs["schedule"](learn, message)
+        assert ran == []  # scheduled, not run while the agent is still answering
+        return AgentResponse(response="ok", step_count=1)
+
+    monkeypatch.setattr(chat_routes, "run_agent", fake_run_agent)
+    response = client.post(f"/sessions/{session_id}/chat", json={"message": "I always buy Sony"})
+    assert response.status_code == 200 and ran == ["I always buy Sony"]
+
+
 @pytest.mark.parametrize(
     ("error", "status", "code"),
     [

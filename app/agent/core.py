@@ -11,18 +11,24 @@ per ShopSense session):
     ├── generate-agent-response  generation  (final answer)
     └── generate-suggestions     generation
 
+Memory extraction (extract-memories) runs after the answer is sent, as its own
+trace in the session, when the caller passes `schedule` (the chat route does).
+
 Observation names are referenced by Langfuse evaluators and dashboards; keep them stable.
 """
 
 import asyncio
 import contextlib
 import json
+import logging
 import re
+from collections.abc import Callable
 from typing import Literal
 
 from langfuse import observe, propagate_attributes
 
 from app.agent.guardrails import RepeatGuard, TurnBudget, repeat_result
+from app.agent.memory import extract_memories
 from app.agent.price_check import check_prices
 from app.agent.prompts import build_system_prompt
 from app.agent.request_check import RequestCheck, change_kind, refusal
@@ -41,6 +47,11 @@ from app.tools.registry import TOOL_MAP, execute_tool, get_tool_schemas
 from app.tracing.langfuse_setup import get_langfuse
 
 langfuse = get_langfuse()
+logger = logging.getLogger("shopsense.agent")
+
+# Runs a function after the response is sent: FastAPI's BackgroundTasks.add_task
+# in the chat route. run_agent schedules work it must not wait for.
+Schedule = Callable[..., object]
 
 # Lookups that don't change state are retrievers; everything else (cart and
 # preference writes, the comparison transform) is a plain tool.
@@ -57,6 +68,7 @@ async def run_agent(
     *,
     llm: LLMAdapter | None = None,
     small_llm: LLMAdapter | None = None,
+    schedule: Schedule | None = None,
     langfuse_trace_id: str | None = None,
 ) -> AgentResponse:
     """
@@ -71,6 +83,9 @@ async def run_agent(
     pass fakes. These arguments are the agent's only dependency on a model.
     Follow-up suggestions aren't made here: the reply returns without waiting
     for them, and the UI asks for them next (app.agent.suggestions).
+    `schedule` runs memory extraction after the response is sent (the chat
+    route passes BackgroundTasks.add_task); without it, as in evals and tests,
+    nothing is learned from the turn.
     `langfuse_trace_id` is consumed by @observe (it sets this run's trace id, so
     a caller can link to the trace even if the run fails); it never reaches the body.
     """
@@ -84,7 +99,7 @@ async def run_agent(
     with propagate_attributes(
         **trace_attributes(trace_name="run-agent", session_id=session_id, llm=llm, small_llm=small_llm)
     ):
-        result = await _run_agent(session_id, user_message, llm, small_llm)
+        result = await _run_agent(session_id, user_message, llm, small_llm, schedule)
 
     langfuse.update_current_span(
         output=result.response,
@@ -98,7 +113,9 @@ async def run_agent(
     return result
 
 
-async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_llm: LLMAdapter) -> AgentResponse:
+async def _run_agent(
+    session_id: str, user_message: str, llm: LLMAdapter, small_llm: LLMAdapter, schedule: Schedule | None
+) -> AgentResponse:
     # 1. Load session context
     session = await queries.get_session(session_id)
     if not session:
@@ -108,9 +125,12 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
     history = await queries.get_messages(session_id)
     preferences = await queries.get_all_preferences()
     cart = await queries.get_cart(session_id)
+    # Long-term memory: what's been learned about the user, and recent sessions.
+    memories = await queries.get_all_memories(limit=15)
+    episodes = await queries.get_recent_episodes(limit=3)
 
     # 2. Build messages array
-    system_prompt = build_system_prompt(preferences, cart, session.budget)
+    system_prompt = build_system_prompt(preferences, cart, session.budget, memories, episodes)
     messages: list[ChatMessage] = [{"role": "system", "content": system_prompt}]
     messages.extend(_replay_history(history))
 
@@ -171,6 +191,7 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
                     token_count=response.usage.get("total_tokens", 0),
                 )
             )
+            _schedule_memory_extraction(schedule, user_message, previous_reply, session_id, small_llm)
 
             return AgentResponse(
                 response=final_text,
@@ -249,6 +270,7 @@ async def _run_agent(session_id: str, user_message: str, llm: LLMAdapter, small_
             content=final_text,
         )
     )
+    _schedule_memory_extraction(schedule, user_message, previous_reply, session_id, small_llm)
     return AgentResponse(
         response=final_text,
         tool_calls_made=tools_called,
@@ -274,6 +296,30 @@ async def _check_prices_traced(answer: str) -> tuple[str, list[PriceCheck]]:
             status_message="prices corrected from the store pages" if changed else None,
         )
     return checked, checks
+
+
+def _schedule_memory_extraction(
+    schedule: Schedule | None, user_message: str, previous_reply: str | None, session_id: str, small_llm: LLMAdapter
+) -> None:
+    """Learn from this turn after the answer is sent, if the caller can schedule it.
+
+    The extractor gets the user's message and the reply they were answering,
+    not this turn's answer: the answer carries web text, and only the user's
+    own words may become lasting memories (MEMORY_IMPLEMENTATION.md, M1).
+    """
+    if schedule is not None:
+        schedule(_extract_memories_safe, user_message, previous_reply, session_id, small_llm)
+
+
+async def _extract_memories_safe(
+    user_message: str, previous_reply: str | None, session_id: str, llm: LLMAdapter
+) -> None:
+    """Background memory extraction. Best-effort: a failure is logged, never raised,
+    so it can't break the request it runs after."""
+    try:
+        await extract_memories(user_message, previous_reply, session_id, llm)
+    except Exception:  # extract_memories already catches its own errors; this is the last line
+        logger.warning("Background memory extraction failed for session %s", session_id, exc_info=True)
 
 
 def _cost(budget: TurnBudget) -> float | None:

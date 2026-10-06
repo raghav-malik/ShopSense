@@ -2,12 +2,15 @@
 
 import json
 import sqlite3
+from collections.abc import Awaitable, Callable
 from typing import cast
 
 import pytest
 
+import app.agent.core as core
 from app.agent.memory import extract_memories, summarize_session
 from app.agent.prompts import build_system_prompt
+from app.config import settings
 from app.db import queries
 from app.db.database import get_db
 from app.db.models import (
@@ -411,3 +414,89 @@ async def test_the_blocks_sit_between_preferences_and_budget_and_the_cart() -> N
     order += ["## Recent Shopping History", "## Current Cart"]
     positions = [prompt.index(heading) for heading in order]
     assert positions == sorted(positions)
+
+
+# ---- wired into the agent ----
+
+
+class Scheduled:
+    """Stands in for BackgroundTasks.add_task: records what the agent scheduled."""
+
+    def __init__(self) -> None:
+        self.jobs: list[tuple[Callable[..., Awaitable[None]], tuple[object, ...]]] = []
+
+    def __call__(self, func: Callable[..., Awaitable[None]], *args: object) -> None:
+        self.jobs.append((func, args))
+
+
+async def test_the_agent_sees_memories_and_recent_sessions(session: Session) -> None:
+    await queries.save_memory(Memory(category="brand_preference", content="prefers Sony for audio"))
+    earlier = await queries.create_session()
+    await queries.save_episode(Episode(session_id=earlier.id, summary="Looked for earbuds under ₹3,000."))
+    llm = FakeLLM(answer("Hi!"))
+    await core.run_agent(session.id, "hey", llm=llm, small_llm=llm)
+    system = llm.agent_calls[0]["messages"][0]["content"]
+    assert "- [brand_preference] prefers Sony for audio" in system
+    assert "Looked for earbuds under ₹3,000." in system
+
+
+async def test_the_agent_loads_the_15_strongest_memories_and_3_latest_sessions(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    limits: dict[str, int] = {}
+
+    async def memories(limit: int = 20) -> list[MemoryRow]:
+        limits["memories"] = limit
+        return []
+
+    async def episodes(limit: int = 5) -> list[EpisodeRow]:
+        limits["episodes"] = limit
+        return []
+
+    monkeypatch.setattr(queries, "get_all_memories", memories)
+    monkeypatch.setattr(queries, "get_recent_episodes", episodes)
+    llm = FakeLLM(answer("Hi!"))
+    await core.run_agent(session.id, "hey", llm=llm, small_llm=llm)
+    assert limits == {"memories": 15, "episodes": 3}
+
+
+async def test_extraction_is_scheduled_with_the_reply_the_user_answered(session: Session) -> None:
+    llm = FakeLLM(answer("Shall I remember that you wear size M?"), answer("Done, noted."))
+    await core.run_agent(session.id, "running shoes", llm=llm, small_llm=llm)
+    scheduled = Scheduled()
+    await core.run_agent(session.id, "yes, remember that", llm=llm, small_llm=llm, schedule=scheduled)
+    [(func, args)] = scheduled.jobs
+    # The previous reply, not this turn's answer, which can carry web text (M1).
+    assert args == ("yes, remember that", "Shall I remember that you wear size M?", session.id, llm)
+
+    extractor = FakeLLM(answer(json.dumps([{"category": "size_info", "content": "wears size M"}])))
+    await func(*args[:3], extractor)  # what BackgroundTasks does after the response is sent
+    assert [m["content"] for m in await queries.get_all_memories()] == ["wears size M"]
+
+
+async def test_extraction_is_scheduled_after_a_turn_limit_answer_too(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "max_agent_steps", 0)
+    scheduled = Scheduled()
+    llm = FakeLLM(answer("From what I found: the boAt."))
+    await core.run_agent(session.id, "I always buy Sony", llm=llm, small_llm=llm, schedule=scheduled)
+    assert [args[:2] for _, args in scheduled.jobs] == [("I always buy Sony", None)]
+
+
+async def test_nothing_is_learned_without_a_scheduler(session: Session) -> None:
+    llm = FakeLLM(answer("Noted."))
+    await core.run_agent(session.id, "I always buy Sony", llm=llm, small_llm=llm)
+    assert [c["name"] for c in llm.calls] == ["generate-agent-response"]
+    assert await queries.get_all_memories() == []
+
+
+async def test_background_extraction_never_raises(
+    session: Session, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def broken(*args: object) -> list[Memory]:
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(core, "extract_memories", broken)
+    await core._extract_memories_safe("I prefer Sony", None, session.id, FakeLLM())
+    assert "Background memory extraction failed" in caplog.text

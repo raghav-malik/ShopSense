@@ -4,7 +4,7 @@ import asyncio
 import logging
 import math
 
-from fastapi import APIRouter
+from fastapi import APIRouter, BackgroundTasks
 from pydantic import BaseModel, Field
 
 from app.agent.core import run_agent
@@ -57,8 +57,9 @@ async def _require_session(session_id: str) -> Session:
         504: {"model": ErrorResponse, "description": "The LLM didn't respond in time"},
     },
 )
-async def chat(session_id: str, request: ChatRequest) -> AgentResponse:
-    """Send a message and get the agent's response."""
+async def chat(session_id: str, request: ChatRequest, background_tasks: BackgroundTasks) -> AgentResponse:
+    """Send a message and get the agent's response. Memory extraction runs after
+    the response is sent, so the answer never waits for it."""
     await _require_session(session_id)
 
     if not request.message.strip():
@@ -70,7 +71,9 @@ async def chat(session_id: str, request: ChatRequest) -> AgentResponse:
     trace_id = langfuse.create_trace_id()
 
     try:
-        return await run_agent(session_id, request.message, langfuse_trace_id=trace_id)
+        return await run_agent(
+            session_id, request.message, schedule=background_tasks.add_task, langfuse_trace_id=trace_id
+        )
     except LLMError as e:
         status, message = next((s, m) for cls, s, m in LLM_ERRORS if isinstance(e, cls))
         logger.warning("Agent LLM failure (%s) for session %s: %s", e.code, session_id, e)
